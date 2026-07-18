@@ -3,61 +3,21 @@ library(tidyverse); library(sf); library(fixest); library(here); library(duckdb)
 source(here("analysis","heat","an_01_functions.R"))
 options(bitmapType = "cairo")
 
-f1 <- here("data","processed","landsat_all146","landsat_all146_obs30m_unified.csv")
-f2 <- here("data","processed","landsat_pre2014","landsat_pre2014_obs30m_unified.csv")
-HS <- c(411,412,648,664,2949,2950,2998,3012,3051,3052)
+source(here("analysis","heat","load_hyperscale_panel.R"))
+d <- load_hyperscale_panel()
+pixel_data <- d$pixel_data
+dc_points  <- d$dc_points
+master_ops <- d$master_ops
 
-con <- dbConnect(duckdb()); dbExecute(con, "SET memory_limit='24GB'")
-pixel_data <- dbGetQuery(con, glue::glue("
-  WITH src AS (
-    SELECT export_id, longitude, latitude, year, month, date_yyyymmdd,
-           LST_Celsius, Emissivity, ST_uncertainty, Elevation,
-           scene_cloud_cover, sensor
-    FROM read_csv('{f1}', ignore_errors=true, union_by_name=true)
-    WHERE export_id IN ({paste(HS, collapse=',')})
-    UNION ALL BY NAME
-    SELECT export_id, longitude, latitude, year, month, date_yyyymmdd,
-           LST_Celsius, Emissivity, ST_uncertainty, Elevation,
-           scene_cloud_cover, sensor
-    FROM read_csv('{f2}', ignore_errors=true, union_by_name=true)),
-  counts AS (
-    SELECT export_id, year, month, date_yyyymmdd,
-           COUNT(*) FILTER (WHERE LST_Celsius IS NOT NULL) AS n_valid
-    FROM src GROUP BY 1,2,3,4
-  ),
-  best AS (
-    SELECT export_id, year, month, date_yyyymmdd FROM (
-      SELECT *, ROW_NUMBER() OVER (PARTITION BY export_id, year, month
-              ORDER BY n_valid DESC, date_yyyymmdd ASC) rk FROM counts) WHERE rk=1
-  )
-  SELECT src.* FROM src JOIN best USING (export_id, year, month, date_yyyymmdd)"))
-dbDisconnect(con)
-# --- Data Sanity Check Printout ---
+# --- Data Sanity Check Printout (keep yours, it's good) ---
 total_obs <- nrow(pixel_data)
 unique_pixels <- pixel_data %>% distinct(export_id, longitude, latitude) %>% nrow()
-
 cat("\n==== Dataset Dimensions ====\n")
 cat("Total Panel Observations (Rows):", format(total_obs, big.mark=","), "\n")
 cat("Distinct Physical 30m Pixels:   ", format(unique_pixels, big.mark=","), "\n")
-cat("Average observations per pixel: ", round(total_obs / unique_pixels, 1), "\n")
 print(count(pixel_data, sensor))
-cat("============================\n\n")
-
-dc_points <- bind_rows(
-  read_csv(here("data","data_final","isolation_sets","landsat_all.csv"),
-           show_col_types = FALSE) %>% filter(export_id %in% HS),
-  read_csv(here("data","data_final","isolation_sets","landsat_pre2014.csv"),
-           show_col_types = FALSE)
-) %>%
-  distinct(export_id, .keep_all = TRUE) %>%
-  st_as_sf(coords = c("projected_x","projected_y"), crs = 5070)
-
-cat("Facilities in panel:", nrow(dc_points), "\n")   # expect 14
-
-master_ops <- read_csv(here("data","data_final","clean01_datacenter.csv"),
-                       show_col_types = FALSE) %>%
-  filter(stage == "Operational") %>%
-  st_as_sf(coords = c("projected_x","projected_y"), crs = 5070)
+cat("Facilities:", nrow(dc_points), "| seam cohort:",
+    sum(dc_points$seam_cohort), "\n")
 
 # Define the precise spatial rings to test
 spatial_rings <- list(

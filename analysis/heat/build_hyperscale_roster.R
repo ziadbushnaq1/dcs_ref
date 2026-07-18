@@ -27,4 +27,9 @@ cat("Roster:", nrow(roster), "facilities |",
     sum(roster$has_event_time), "with event time |",
     sum(roster$seam_cohort), "seam cohort |",
     "by source:\n"); print(count(roster, source_set))
+
+d_mat <- dist(roster %>% select(projected_x, projected_y))
+roster$campus_id <- cutree(hclust(d_mat, method = "single"), h = 1500)
+cat("Campuses:", n_distinct(roster$campus_id), "from", nrow(roster), "facilities\n")
+
 write_csv(roster, here("data","data_final","hyperscale_roster.csv"))

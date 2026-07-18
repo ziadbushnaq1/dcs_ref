@@ -268,7 +268,7 @@ drop_conflicted_cells <- function(pixels_classified, treat_only = TRUE) {
 
 run_spatial_model <- function(panel_data, fe_spec = "pixel_id + year",
                               is_event_study = FALSE, ref_year = -1,
-                              use_nlcd_control = FALSE, sensor = "landsat", use_construction = FALSE) {
+                              use_nlcd_control = FALSE, sensor = "landsat", use_construction = FALSE, cluster_var = "export_id") {
   
   # Validate: every FE variable must exist in the panel
   fe_vars <- unique(unlist(strsplit(gsub(" ", "", fe_spec), "[+^]")))
@@ -296,7 +296,7 @@ run_spatial_model <- function(panel_data, fe_spec = "pixel_id + year",
   }
   
   form_str <- paste0("relative_lst ~ ", treat_term, covariate_term, " | ", fe_spec)
-  feols(as.formula(form_str), data = panel_data, cluster = ~export_id)
+  feols(as.formula(form_str), data = panel_data, cluster = ~as.formula(paste0("~", cluster_var)))
 }
 
 run_pixel_analysis <- function(raw_csv_data, dc_points, 
@@ -319,13 +319,15 @@ run_pixel_analysis <- function(raw_csv_data, dc_points,
   )
   
   if (use_intensity) {
-    if (is.null(master_dcs)) stop("use_intensity = TRUE requires master_dcs (operational-filtered sf)")
+    if (is.null(master_dcs)) stop("use_intensity requires master_dcs")
     classified_data <- assign_treatment_intensity(
-      classified_data, master_dcs, treat_radius_m = max_treat_m)
-    # Year-varying control hygiene: a control pixel is only excluded in
-    # years it is actually covered by an operational DC's zone.
+      classified_data, master_dcs, treat_radius_m = 600)   # contamination radius fixed at 600
+    if (!"near_unknown_dc" %in% names(classified_data))
+      classified_data$near_unknown_dc <- FALSE
+    # STATIC drop: control pixel within 600m of ANY inventory DC, any year
     classified_data <- classified_data %>%
-      filter(!(status == "Control" & n_treating > 0))
+      filter(!(status == "Control" &
+                 (!is.na(first_treat_year) | near_unknown_dc)))
   }
   
   if(drop_conflicts){

@@ -172,22 +172,6 @@ case $JOB_TYPE in
             Rscript analysis/heat/fig_hyperscale_trend.R"
         ;;
 
-    eval_contam)
-        sbatch \
-            --job-name=eval_contam \
-            --account=$ACCOUNT \
-            --partition=$PARTITION \
-            --nodes=1 \
-            --ntasks=1 \
-            --cpus-per-task=8 \
-            --mem=48G \
-            --time=2:00:00 \
-            --output=${BASE_DIR}/eval_contam_%j.log \
-            --wrap="$SETUP_CMDS
-            Rscript analysis/heat/eval_contamination.R"
-        ;;
-        
-    #claude
     contam_eval)
         sbatch \
             --job-name=contam_eval \
