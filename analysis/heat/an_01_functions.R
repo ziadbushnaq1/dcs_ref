@@ -316,7 +316,8 @@ run_pixel_analysis <- function(raw_csv_data, dc_points,
                                filter_elev = TRUE, elev_threshold = 50,
                                is_event_study = FALSE, ref_year = -1,
                                use_nlcd_control = FALSE, use_intensity = FALSE, master_dcs = NULL,
-                               sensor = "landsat", drop_conflicts = FALSE, use_construction = FALSE, cluster_var = "export_id") {
+                               sensor = "landsat", drop_conflicts = FALSE, use_construction = FALSE, 
+                               cluster_var = "export_id", drop_unknown_controls = TRUE) {
   
   if (use_power_builtout) {
     dc_points <- dc_points %>% filter(!is.na(power_builtout))
@@ -334,10 +335,14 @@ run_pixel_analysis <- function(raw_csv_data, dc_points,
       classified_data, master_dcs, treat_radius_m = 600)   # contamination radius fixed at 600
     if (!"near_unknown_dc" %in% names(classified_data))
       classified_data$near_unknown_dc <- FALSE
-    # STATIC drop: control pixel within 600m of ANY inventory DC, any year
+    # STATIC drop: control pixel within 600m of ANY inventory DC, any year.
+    # drop_unknown_controls = FALSE keeps controls near undated DCs while
+    # still dropping controls near dated DCs (first_treat_year term stays
+    # unconditional -- those are verifiably contaminated).
     classified_data <- classified_data %>%
       filter(!(status == "Control" &
-                 (!is.na(first_treat_year) | near_unknown_dc)))
+                 (!is.na(first_treat_year) |
+                    (drop_unknown_controls & near_unknown_dc))))
   }
   
   if(drop_conflicts){

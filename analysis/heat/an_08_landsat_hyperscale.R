@@ -31,7 +31,7 @@ params <- expand.grid(
   ring_idx = seq_along(spatial_rings),
   intens = c(FALSE, TRUE),
   use_construction = c(FALSE, TRUE), 
-  mod_fe = c("pixel_id + year", "pixel_id + year^export_id"),
+  mod_fe = c("pixel_id + year", "pixel_id + year^export_id", "pixel_id + year^month"),
   stringsAsFactors = FALSE
 )
 params$cluster_var <- "export_id"
@@ -45,7 +45,7 @@ out <- list()
 CTRL_MIN <- 1000
 CTRL_MAX <- 1500 
 
-REF_YEAR <- -1
+REF_YEAR <- -4
 
 if (REF_YEAR < -1) {
   cat("\n=======================================================================\n")

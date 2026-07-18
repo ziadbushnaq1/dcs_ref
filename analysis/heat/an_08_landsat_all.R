@@ -63,13 +63,33 @@ params <- expand.grid(
 )
 # year^export_id only for the primary ring (expensive at 145 DCs)
 params <- bind_rows(params,
-                    expand.grid(grp = names(GROUPS), ring_idx = 2L,  
+                    expand.grid(grp = names(GROUPS), ring_idx = 4L,  
                                 intens = c(FALSE, TRUE),
                                 use_construction = c(FALSE, TRUE),
                                 mod_fe = "pixel_id + year^export_id",
                                 stringsAsFactors = FALSE))
 
-CTRL_MIN <- 1000; CTRL_MAX <- 1500; REF_YEAR <- -1;
+params <- bind_rows(params,
+                    expand.grid(grp = names(GROUPS), ring_idx = 3L,   # match your headline ring
+                                intens = c(FALSE, TRUE),
+                                use_construction = c(FALSE, TRUE),
+                                mod_fe = "pixel_id + year^month",
+                                stringsAsFactors = FALSE) %>%
+                      mutate(drop_unknown_controls = TRUE))
+
+# All existing rows use the default (drop unknown-neighbor controls)
+params$drop_unknown_controls <- TRUE
+
+# One extra row: headline cell only (all-DC group, ring 300-600, intensity,
+# construction dummy, baseline FE) with unknown-neighbor controls KEPT.
+# ring_idx = 3L because spatial_rings[[3]] is c(300, 600).
+params <- bind_rows(params,
+                    tibble(grp = "all", ring_idx = 3L,
+                           intens = TRUE, use_construction = TRUE,
+                           mod_fe = "pixel_id + year",
+                           drop_unknown_controls = FALSE))
+
+CTRL_MIN <- 1000; CTRL_MAX <- 1500; REF_YEAR <- -4;
 out <- list()
 
 if (REF_YEAR < -1) {
@@ -92,6 +112,7 @@ for (i in seq_len(nrow(params))) {
   intens <- params$intens[i]
   constr_flag <- params$use_construction[i]
   mod_fe <- params$mod_fe[i]
+  unk_flag <- params$drop_unknown_controls[i]
   cat(sprintf("[%d/%d] Group: %s | Ring: %d-%dm | Intens: %s | Construction: %s | FE: %s\n",
               i, nrow(params), grp, ring[1], ring[2], intens, constr_flag, mod_fe))
   
@@ -105,7 +126,8 @@ for (i in seq_len(nrow(params))) {
       ref_year = REF_YEAR, use_intensity = intens,
       master_dcs = if (intens) master_ops else NULL,
       sensor = "landsat_monthly",
-      use_construction = constr_flag),
+      use_construction = constr_flag,
+      drop_unknown_controls = unk_flag),
     error = function(e) { message(" -> SKIP: ", conditionMessage(e)); NULL })
   if (is.null(res)) next
   
@@ -119,7 +141,8 @@ for (i in seq_len(nrow(params))) {
       ring_max = ring[2],
       ring_label = paste0(ring[1],"-",ring[2],"m"),
       intensity = intens,
-      use_construction = constr_flag,
+      use_construction = constr_flag,,
+      drop_unknown_controls = unk_flag,
       fe_spec = mod_fe, 
       ref_year = REF_YEAR,
       term = tm,
