@@ -169,42 +169,33 @@ assign_treatment_intensity <- function(pixels_classified, master_dcs_sf,
     mutate(mx = st_coordinates(.)[,1], my = st_coordinates(.)[,2]) %>%
     st_drop_geometry()
   
-  dcs <- master_proj %>% filter(!is.na(year_operational)) %>%
-    select(master_year_op = year_operational, mx, my)          # known-year (unchanged role)
-  dcs_unknown <- master_proj %>% filter(is.na(year_operational)) %>%
-    select(mx, my)                                              # NEW
+  dcs_known <- master_proj %>%
+    filter(!is.na(year_operational)) %>%
+    select(master_year_op = year_operational, mx, my)
+  dcs_unknown <- master_proj %>%
+    filter(is.na(year_operational)) %>%
+    select(mx, my)
   
-  # Unique physical pixels (one row each, not per observation)
   px <- pixels_classified %>%
     distinct(longitude, latitude, pixel_x, pixel_y)
   
-  # All pixel-DC pairs within radius via fast kNN, then exact filter.
-  # k capped at 15: no pixel plausibly sits inside >15 DCs' 600m zones.
-  nn <- RANN::nn2(data  = as.matrix(dcs[, c("mx", "my")]),
-                  query = as.matrix(px[, c("pixel_x", "pixel_y")]),
-                  k = min(15, nrow(dcs)), searchtype = "radius",
-                  radius = treat_radius_m)
-  
-  pairs <- tibble(
-    px_row = rep(seq_len(nrow(px)), each = ncol(nn$nn.idx)),
-    dc_idx = as.vector(t(nn$nn.idx))
-  ) %>%
-    filter(dc_idx > 0) %>%                       
-    mutate(longitude = px$longitude[px_row],
-           latitude  = px$latitude[px_row],
-           master_year_op = dcs$master_year_op[dc_idx]) %>%
-    select(longitude, latitude, master_year_op)
-  
-  # Per pixel: sorted vector of covering-DC opening years
+  # --- known-year coverage -> time-varying dose ---
+  nn <- RANN::nn2(as.matrix(dcs_known[, c("mx","my")]),
+                  as.matrix(px[, c("pixel_x","pixel_y")]),
+                  k = min(15, nrow(dcs_known)),
+                  searchtype = "radius", radius = treat_radius_m)
+  pairs <- tibble(px_row = rep(seq_len(nrow(px)), each = ncol(nn$nn.idx)),
+                  dc_idx = as.vector(t(nn$nn.idx))) %>%
+    filter(dc_idx > 0) %>%
+    transmute(longitude = px$longitude[px_row],
+              latitude  = px$latitude[px_row],
+              master_year_op = dcs_known$master_year_op[dc_idx])
   coverage <- pairs %>%
     group_by(longitude, latitude) %>%
-    summarise(
-      covering_years = list(sort(master_year_op)),
-      first_treat_year = min(master_year_op), 
-      .groups = "drop"
-    )
+    summarise(covering_years  = list(sort(master_year_op)),
+              first_treat_year = min(master_year_op), .groups = "drop")
   
-  # --- unknown-year facilities: permanent contamination flag (no dose) ---
+  # --- unknown-year coverage -> permanent contamination flag ---
   if (nrow(dcs_unknown) > 0) {
     nnu <- RANN::nn2(as.matrix(dcs_unknown[, c("mx","my")]),
                      as.matrix(px[, c("pixel_x","pixel_y")]),
@@ -215,20 +206,18 @@ assign_treatment_intensity <- function(pixels_classified, master_dcs_sf,
     px$near_unknown_dc <- FALSE
   }
   
-  # Compute n_treating on the DISTINCT pixel-year grid, then join back.
-  # map2_int over the full panel is O(rows); this is O(pixels x years).
+  # --- n_treating on the distinct pixel-year grid, then join back ---
   grid <- pixels_classified %>%
     distinct(longitude, latitude, year) %>%
     left_join(coverage, by = c("longitude", "latitude")) %>%
-    left_join(px %>% select(longitude, latitude, near_unknown_dc),
-              by = c("longitude", "latitude")) %>%
-    mutate(n_treating = map2_int(
-      covering_years, year,
-      ~ { if (is.null(.x) || length(.x) == 0) 0L else sum(.x <= .y) })) %>%
+    mutate(n_treating = map2_int(covering_years, year,
+                                 ~ { if (is.null(.x) || length(.x) == 0) 0L else sum(.x <= .y) })) %>%
     select(longitude, latitude, year, n_treating, first_treat_year)
   
   pixels_classified %>%
-    left_join(grid, by = c("longitude", "latitude", "year"))
+    left_join(grid, by = c("longitude", "latitude", "year")) %>%
+    left_join(px %>% select(longitude, latitude, near_unknown_dc),
+              by = c("longitude", "latitude"))
 }
 
 drop_conflicted_cells <- function(pixels_classified, treat_only = TRUE) {

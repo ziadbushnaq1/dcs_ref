@@ -65,7 +65,7 @@ for (asset_id in c('landsat_all146', 'landsat_pre2014', 'landsat_hs_extra')) {
   dir.create(asset_out_dir, showWarnings = FALSE, recursive = TRUE)
   
   l89_files <- list.files(asset_raw_dir,
-                          pattern = paste0("^", asset_id, "_Obs30m_DC.*\\.csv$"),
+                          pattern = paste0("^", asset_id, "_Obs30m(_2026)?_DC.*\\.csv$"),
                           full.names = TRUE)
   l5_files  <- list.files(asset_raw_dir,
                           pattern = paste0("^", asset_id, "_L5Obs30m_DC.*\\.csv$"),
