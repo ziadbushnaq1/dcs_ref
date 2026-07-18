@@ -1,0 +1,441 @@
+---
+title: "Data Centers & Light at Night: County-Level DiD Analysis"
+author: ""
+output: html_document
+---
+
+```{r setup, include=FALSE}
+library(knitr)
+library(tidyverse)
+library(sf)
+library(tigris)
+library(readxl)
+library(janitor)
+library(here)
+library(did)
+library(tidycensus)
+
+options(tigris_use_cache = TRUE)
+
+# Let tidycensus find the key whether your project uses CENSUS_KEY or CENSUS_API_KEY.
+if (Sys.getenv("CENSUS_API_KEY") == "" && Sys.getenv("CENSUS_KEY") != "") {
+  Sys.setenv(CENSUS_API_KEY = Sys.getenv("CENSUS_KEY"))
+}
+
+knitr::opts_chunk$set(echo = TRUE, tidy = FALSE, comment = NA, fig.path = "./figures/", fig.align = "center", fig.width = 9, fig.height = 5, message = FALSE, warning = FALSE)
+
+lights_start_year <- 2012
+lights_end_year   <- 2020
+lights_sheet <- "2020_boundary_ALAN_2012_to_2020"
+lights_file <- here("data", "data_raw", "ALAN_VIIRS_CONUS_2012_to_2020_county_level.xlsx")
+data_centers_file <- here("data", "data_final", "economyDataFinal", "clean01EconDatacenter.csv")
+county_health_dir <- here("data", "economyData", "raw_migration")
+
+print_all_event_plots <- TRUE
+
+# Minimum treated counties required in a cohort after filtering to avoid extremely small treated cohorts that can make att_gt unstable.
+min_treated_cohort_size <- 5
+
+# Output folders.
+dir.create(here("figures"), showWarnings = FALSE, recursive = TRUE)
+dir.create(here("outputs"), showWarnings = FALSE, recursive = TRUE)
+```
+
+## Section 1: County Boundaries
+
+Download lower-48 county polygons from Census TIGER/Line. These polygons are used
+only to assign each data center to a county.
+
+```{r county-boundaries}
+non_contiguous_fips <- c("02", "15", "60", "66", "69", "72", "78")
+
+lower_48_counties <- counties(cb = TRUE, year = 2020) %>%
+  filter(!STATEFP %in% non_contiguous_fips) %>%
+  st_transform(crs = 4326)
+
+lower_48_counties %>%
+  st_drop_geometry() %>%
+  summarize(n_counties = n_distinct(GEOID))
+```
+
+
+## Section 2: Load Data Centers
+
+Read the cleaned data center file and keep operational facilities with valid
+coordinates.
+
+```{r load-datacenters}
+data_centers <- readr::read_csv(data_centers_file, show_col_types = FALSE) %>%
+  mutate(longitude = as.numeric(longitude), latitude = as.numeric(latitude), year_operational = as.numeric(year_operational)) %>%
+  filter(stage == "Operational", !is.na(longitude), !is.na(latitude)) %>%
+  st_as_sf(coords = c("longitude", "latitude"), crs = 4326)
+#glimpse(data_centers)
+```
+
+## Section 3: Treatment Assignment
+
+A county is treated when its first operational data center appears during the
+lights panel, 2012-2020. Counties with first data centers before 2012 are already
+treated before the outcome panel starts, so they are dropped from the main DiD.
+Counties with no data center during the observed lights panel are controls.
+
+```{r treatment-assignment}
+data_centers_county <- st_join(data_centers, lower_48_counties %>% select(GEOID, NAMELSAD, STATEFP, geometry), join = st_within)
+
+county_status <- data_centers_county %>%
+  st_drop_geometry() %>%
+  filter(!is.na(GEOID)) %>%
+  group_by(GEOID) %>%
+  summarize(has_known_year = any(!is.na(year_operational)), earliest_known_year = if_else(has_known_year, min(year_operational, na.rm = TRUE), NA_real_), dc_count = n(), .groups = "drop") %>%
+  mutate(
+    status = case_when(
+      !has_known_year ~ "Drop: Missing Years",
+      earliest_known_year < lights_start_year ~ "Drop: Pre-2012",
+      earliest_known_year <= lights_end_year ~ "Treated",
+      TRUE ~ "Control"
+    ),
+    first_dc_year = if_else(status == "Treated", earliest_known_year, NA_real_)
+  )
+
+analysis_counties <- lower_48_counties %>%
+  st_drop_geometry() %>%
+  select(GEOID, county_name = NAMELSAD, STATEFP) %>%
+  left_join(county_status %>% select(GEOID, status, first_dc_year, dc_count), by = "GEOID") %>%
+  mutate(status = replace_na(status, "Control"), dc_count = replace_na(dc_count, 0L))
+
+analysis_counties %>%
+  count(status)
+
+analysis_counties %>%
+  filter(status == "Treated") %>%
+  count(first_dc_year, name = "n_treated_counties") %>%
+  arrange(first_dc_year)
+```
+
+## Section 4: Load County-Level VIIRS ALAN Data
+
+```{r load-lights}
+excel_sheets(lights_file)
+
+lights_raw <- read_excel(lights_file, sheet = lights_sheet) %>%
+  clean_names()
+
+glimpse(lights_raw)
+
+lights_county <- lights_raw %>%
+  # county_id may be read as numeric, so leading zeroes need to be restored.
+  mutate(GEOID = stringr::str_pad(as.character(as.integer(as.numeric(county_id))), 5, pad = "0"), year = as.integer(year), across(starts_with("rad_"), as.numeric), nraster = as.numeric(nraster)) %>%
+  filter(year >= lights_start_year, year <= lights_end_year) %>%
+  select(GEOID, county_id, county, state, year, nraster, rad_mean, rad_min, rad_max, rad_median, rad_sd, rad_q25, rad_q75, rad_iqr)
+#glimpse(lights_county)
+
+lights_county %>%
+  summarize(years = paste(sort(unique(year)), collapse = ", "), n_counties = n_distinct(GEOID), n_county_years = n())
+```
+
+## Section 5: Merge Lights With Treatment Status
+Each county-year light observation gets the county's treatment status, first data center year, and datacenter count.
+
+```{r merge-lights-treatment}
+lights_analysis <- lights_county %>%
+  inner_join(analysis_counties %>% select(GEOID, status, first_dc_year, dc_count), by = "GEOID") %>%
+  filter(status %in% c("Treated", "Control")) %>%
+  # Radiance measures should not be negative. Any negative values are treated as missing.
+  mutate(across(starts_with("rad_"), ~ if_else(.x < 0, NA_real_, .x)))
+
+#glimpse(lights_analysis)
+
+lights_analysis %>%
+  count(status, year) %>%
+  pivot_wider(names_from = status, values_from = n)
+```
+
+
+## Section 6: ACS + County Health Covariates
+
+These covariates are used only in the covariate-controlled specifications. They
+are lagged one year so the controls are measured before the light outcome year.
+For example, the 2012 light outcome uses 2011 controls, and the 2020 light outcome uses 2019 controls.
+
+The Census/ACS pull gives population, income, and education controls. The County
+Health files add race-share controls, matching the extra covariates used in the
+economic-impact analysis.
+
+```{r acs-county-health-covariates}
+acs_years <- (lights_start_year - 1):(lights_end_year - 1)
+
+pull_acs_year <- function(yr) {
+  base_vars <- c(median_income = "DP03_0062", pct_bachelors = if (yr <= 2018) "DP02_0061P" else "DP02_0062P", pct_hs_grad = if (yr <= 2018) "DP02_0067P" else "DP02_0068P", total_pop = "B01003_001")
+
+  get_acs(geography = "county", variables = base_vars, year = yr, survey = "acs5", cache_table = TRUE) %>%
+    select(GEOID, variable, estimate) %>%
+    pivot_wider(names_from = variable, values_from = estimate) %>%
+    mutate(acs_year = yr, log_pop = log(total_pop), log_median_income = log(median_income))
+}
+
+read_county_health_year <- function(yr) {
+  county_health_file <- file.path(county_health_dir, paste0("clh_", yr, "_county_2_0.xlsx"))
+
+  if (!file.exists(county_health_file)) {
+    warning("Missing County Health file: ", county_health_file)
+    return(tibble(GEOID = character(), ch_year = integer(), ACS_PCT_WHITE = numeric(), ACS_PCT_BLACK = numeric(), ACS_PCT_HISPANIC = numeric(), ACS_PCT_ASIAN = numeric(), ACS_PCT_AIAN = numeric()))
+  }
+
+  read_excel(county_health_file, sheet = "Data", col_types = "text") %>%
+    transmute(
+      GEOID = str_pad(as.character(COUNTYFIPS), 5, pad = "0"),
+      ch_year = as.integer(YEAR),
+      ACS_PCT_WHITE = as.numeric(ACS_PCT_WHITE),
+      ACS_PCT_BLACK = as.numeric(ACS_PCT_BLACK),
+      ACS_PCT_HISPANIC = as.numeric(ACS_PCT_HISPANIC),
+      ACS_PCT_ASIAN = as.numeric(ACS_PCT_ASIAN),
+      ACS_PCT_AIAN = as.numeric(ACS_PCT_AIAN)
+    )
+}
+
+acs_covariates <- bind_rows(lapply(acs_years, pull_acs_year))
+county_health_covariates <- bind_rows(lapply(acs_years, read_county_health_year))
+
+acs_lagged <- acs_covariates %>%
+  transmute(GEOID, year = acs_year + 1L, lag_log_pop = log_pop, lag_log_median_income = log_median_income, lag_pct_bachelors = pct_bachelors, lag_pct_hs_grad = pct_hs_grad)
+
+county_health_lagged <- county_health_covariates %>%
+  transmute(GEOID, year = ch_year + 1L, lag_pct_white = ACS_PCT_WHITE, lag_pct_black = ACS_PCT_BLACK, lag_pct_hispanic = ACS_PCT_HISPANIC, lag_pct_asian = ACS_PCT_ASIAN, lag_pct_aian = ACS_PCT_AIAN) %>%
+  distinct(GEOID, year, .keep_all = TRUE)
+
+lights_analysis_acs <- lights_analysis %>%
+  left_join(acs_lagged, by = c("GEOID", "year")) %>%
+  left_join(county_health_lagged, by = c("GEOID", "year"))
+
+did_control_vars <- c("lag_log_pop", "lag_log_median_income", "lag_pct_bachelors", "lag_pct_hs_grad", "lag_pct_white", "lag_pct_black", "lag_pct_hispanic", "lag_pct_asian", "lag_pct_aian")
+did_control_formula <- as.formula(paste("~", paste(did_control_vars, collapse = " + ")))
+
+glimpse(lights_analysis_acs)
+
+lights_analysis_acs %>%
+  summarize(across(all_of(did_control_vars), ~ sum(is.na(.x)), .names = "missing_{.col}"))
+```
+
+## Section 7: Outcome List and Model Grid
+
+`nraster` is not treated as a light outcome because it is the number of raster
+pixels in the county, which mostly reflects county size/coverage. The regression
+outcomes are the available `rad_` variables.
+
+```{r outcome-and-model-grid}
+light_outcomes <- tibble::tribble(
+  ~outcome_var, ~outcome_label, ~outcome_type,
+  "rad_mean",   "Mean Radiance",                "average intensity",
+  "rad_min",    "Minimum Radiance",             "lower tail / darkest pixel",
+  "rad_max",    "Maximum Radiance",             "brightest pixel / hotspot",
+  "rad_median", "Median Radiance",              "typical pixel",
+  "rad_sd",     "Radiance Standard Deviation",  "within-county dispersion",
+  "rad_q25",    "25th Percentile Radiance",     "lower quartile",
+  "rad_q75",    "75th Percentile Radiance",     "upper quartile",
+  "rad_iqr",    "Radiance Interquartile Range", "middle-spread dispersion"
+)
+
+model_specs <- tibble::tribble(
+  ~spec_id,    ~control_group,  ~use_covariates, ~spec_label,
+  "nt_nocov",  "nevertreated",  FALSE,           "Never Treated | No Covariates",
+  "nyt_nocov", "notyettreated", FALSE,           "Not Yet Treated | No Covariates",
+  "nt_cov",    "nevertreated",  TRUE,            "Never Treated | Lagged ACS + Race Covariates",
+  "nyt_cov",   "notyettreated", TRUE,            "Not Yet Treated | Lagged ACS + Race Covariates"
+)
+
+model_grid <- tidyr::crossing(light_outcomes, model_specs) %>%
+  mutate(model_id = paste(outcome_var, spec_id, sep = "__"))
+
+knitr::kable(model_grid, caption = "Nighttime Lights Outcome x DiD Specification Grid")
+```
+
+## Section 8: DiD Function
+
+All outcomes are transformed using `log1p(x) = log(1 + x)`. This keeps zero-light
+observations instead of dropping them. The interpretation is approximately a
+percentage change for small-to-moderate effects, but the exact interpretation is a
+change in log one-plus radiance.
+
+```{r did-function}
+run_lights_did <- function(outcome_var, outcome_label, outcome_type, control_group, use_covariates, spec_label, data, transform = "log1p", min_cohort_size = min_treated_cohort_size, start_year = lights_start_year, end_year = lights_end_year) {
+
+  n_years <- length(start_year:end_year)
+
+  control_vars <- did_control_vars
+
+  df <- data %>%
+    filter(status == "Control" | (status == "Treated" & first_dc_year >= start_year & first_dc_year <= end_year)) %>%
+    filter(year >= start_year, year <= end_year) %>%
+    mutate(outcome_raw = .data[[outcome_var]]) %>%
+    filter(!is.na(outcome_raw), outcome_raw >= 0)
+
+  if (use_covariates) {
+    df <- df %>% filter(if_all(all_of(control_vars), ~ !is.na(.x)))
+    xformla <- did_control_formula
+    covariate_label <- "Lagged ACS + race covariates"
+  } else {
+    xformla <- ~ 1
+    covariate_label <- "No covariates"
+  }
+
+  df <- df %>%
+    group_by(GEOID) %>%
+    filter(n_distinct(year) == n_years) %>%
+    ungroup() %>%
+    mutate(G = if_else(status == "Treated" & !is.na(first_dc_year), as.integer(first_dc_year), 0L)) %>%
+    group_by(G) %>%
+    filter(G == 0 | n_distinct(GEOID) >= min_cohort_size) %>%
+    ungroup() %>%
+    mutate(county_id_did = as.integer(factor(GEOID)))
+
+  if (transform == "log1p") {
+    df <- df %>% mutate(outcome = log1p(outcome_raw))
+    y_label <- paste0("ATT (log(1 + ", outcome_label, "))")
+  } else if (transform == "log") {
+    df <- df %>% filter(outcome_raw > 0) %>% mutate(outcome = log(outcome_raw))
+    y_label <- paste0("ATT (log ", outcome_label, ")")
+  } else if (transform == "level") {
+    df <- df %>% mutate(outcome = outcome_raw)
+    y_label <- paste0("ATT (", outcome_label, ")")
+  } else {
+    stop("transform must be one of: 'log1p', 'log', or 'level'.")
+  }
+
+  cohort_sizes <- df %>%
+    filter(G > 0) %>%
+    distinct(GEOID, G) %>%
+    count(G, name = "n_treated_counties") %>%
+    arrange(G)
+
+  cs <- att_gt(yname = "outcome", tname = "year", idname = "county_id_did", gname = "G", xformla = xformla, control_group = control_group, clustervars = "county_id_did", allow_unbalanced_panel = TRUE, data = df)
+
+  att_overall <- aggte(cs, type = "simple", na.rm = TRUE)
+  att_dyn <- aggte(cs, type = "dynamic", na.rm = TRUE)
+  att_cal <- aggte(cs, type = "calendar", na.rm = TRUE)
+
+  p_event <- ggdid(att_dyn) +
+    geom_vline(xintercept = -0.5, linetype = "dashed", color = "red") +
+    labs(title = paste("Event Study —", outcome_label), subtitle = paste0(start_year, "–", end_year, " cohorts | ", control_group, " control | ", covariate_label), x = "Years Relative to First Data Center Opening", y = y_label)
+
+  p_calendar <- ggdid(att_cal) +
+    labs(title = paste("Calendar-Time Effects —", outcome_label), subtitle = paste0(start_year, "–", end_year, " cohorts | ", control_group, " control | ", covariate_label), x = "Calendar year", y = y_label)
+
+  list(error = FALSE, outcome_var = outcome_var, outcome_label = outcome_label, outcome_type = outcome_type, control_group = control_group, use_covariates = use_covariates, spec_label = spec_label, transform = transform, data_used = df, cohort_sizes = cohort_sizes, cs = cs, overall = att_overall, dynamic = att_dyn, calendar = att_cal, p_event = p_event, p_calendar = p_calendar)
+}
+
+run_lights_did_safe <- function(outcome_var, outcome_label, outcome_type, control_group, use_covariates, spec_label, data) {
+  tryCatch(
+    run_lights_did(outcome_var = outcome_var, outcome_label = outcome_label, outcome_type = outcome_type, control_group = control_group, use_covariates = use_covariates, spec_label = spec_label, data = data, transform = "log1p"),
+    error = function(e) {
+      list(error = TRUE, error_message = conditionMessage(e), outcome_var = outcome_var, outcome_label = outcome_label, outcome_type = outcome_type, control_group = control_group, use_covariates = use_covariates, spec_label = spec_label, transform = "log1p")
+    }
+  )
+}
+```
+
+## Section 9: Run All Light Outcome Regressions
+
+```{r run-all-did}
+set.seed(12345)
+all_light_did_results <- pmap(
+  model_grid,
+  function(outcome_var, outcome_label, outcome_type, spec_id, control_group, use_covariates, spec_label, model_id) {
+    run_lights_did_safe(outcome_var = outcome_var, outcome_label = outcome_label, outcome_type = outcome_type, control_group = control_group, use_covariates = use_covariates, spec_label = spec_label, data = lights_analysis_acs)
+  }
+)
+names(all_light_did_results) <- model_grid$model_id
+
+# Check whether any models failed.
+model_status <- tibble(model_id = names(all_light_did_results), error = map_lgl(all_light_did_results, "error"), error_message = map_chr(all_light_did_results, ~ { if (isTRUE(.x$error)) .x$error_message else "" }))
+
+knitr::kable(model_status, caption = "Model Run Status")
+```
+
+---
+
+## Section 10: Results Summary Table
+
+```{r results-summary}
+
+
+extract_lights_results <- function(result) {
+  cg   <- dplyr::recode(result$control_group,
+                        "nevertreated"  = "Never Treated",
+                        "notyettreated" = "Not Yet Treated")
+  spec <- if (result$use_covariates) "Lagged ACS + Race Controls" else "No Covariates"
+
+  if (isTRUE(result$error)) {
+    return(tibble(Outcome = result$outcome_label, `Outcome Variable` = result$outcome_var, `Outcome Type` = result$outcome_type, Specification = spec, `Control Group` = cg, Covariates = if_else(result$use_covariates, "Yes", "No"), Transform = result$transform, ATT = NA_real_, SE = NA_real_, `95% CI Lower` = NA_real_, `95% CI Upper` = NA_real_, `p-value` = NA_real_, `Counties Used` = NA_integer_, `County-Years Used` = NA_integer_, Status = "Error", `Error Message` = result$error_message))
+  }
+
+  ATT <- result$overall$overall.att
+  SE <- result$overall$overall.se
+  p_value <- 2 * (1 - pnorm(abs(ATT / SE)))
+
+  tibble(Outcome = result$outcome_label, `Outcome Variable` = result$outcome_var, `Outcome Type` = result$outcome_type, Specification = result$spec_label, `Control Group` = result$control_group, Covariates = if_else(result$use_covariates, "Yes", "No"), Transform = result$transform, ATT = ATT, SE = SE, `95% CI Lower` = ATT - 1.96 * SE, `95% CI Upper` = ATT + 1.96 * SE, `p-value` = p_value, `Counties Used` = n_distinct(result$data_used$GEOID), `County-Years Used` = nrow(result$data_used), Status = "OK", `Error Message` = "")
+}
+
+lights_results_summary <- bind_rows(lapply(all_light_did_results, extract_lights_results)) %>%
+  arrange(`Outcome Variable`, Covariates, `Control Group`)
+
+knitr::kable(lights_results_summary, digits = 3, caption = "Overall ATT Estimates for All County-Level Artificial Light at Night Outcomes")
+
+shiny_report_dir <- here::here("..", "..", "ShinyApp", "report")
+dir.create(shiny_report_dir, showWarnings = FALSE, recursive = TRUE)
+
+saveRDS(
+  all_light_did_results,
+  file.path(shiny_report_dir, "all_light_did_results.rds")
+)
+
+saveRDS(
+  lights_results_summary,
+  file.path(shiny_report_dir, "lights_results_summary.rds")
+)
+
+readr::write_csv(
+  lights_results_summary,
+  file.path(shiny_report_dir, "lights_results_summary.csv")
+)
+
+# Also export a copy for the Shiny app results table.
+# If this Rmd is run from the repo root, ShinyApp/report is usually the correct target.
+shiny_report_dir <- here("ShinyApp", "report")
+if (!dir.exists(shiny_report_dir)) shiny_report_dir <- here("report")
+dir.create(shiny_report_dir, showWarnings = FALSE, recursive = TRUE)
+saveRDS(lights_results_summary, file.path(shiny_report_dir, "lights_results_summary.rds"))
+```
+
+## Section 11: Event Study Plots
+
+This prints and saves event-study plots for every successful model when
+`print_all_event_plots <- TRUE`.
+
+```{r event-study-plots, eval=print_all_event_plots}
+for (model_id in names(all_light_did_results)) {
+  res <- all_light_did_results[[model_id]]
+  if (isFALSE(res$error)) {
+    print(res$p_event)
+    ggsave(here("figures", paste0("event_study__", model_id, ".png")), res$p_event, width = 9, height = 5, dpi = 150)
+  }
+}
+```
+
+## Section 12: Descriptive Summary Data for Shiny or Reporting
+
+```{r descriptive-summary-export}
+lights_summary_data <- lights_analysis_acs %>%
+  transmute(GEOID, county, state, year, status, first_dc_year, dc_count, nraster, rad_mean, rad_min, rad_max, rad_median, rad_sd, rad_q25, rad_q75, rad_iqr, across(all_of(did_control_vars)))
+
+saveRDS(lights_summary_data, here("outputs", "lights_summary_data.rds"))
+
+summary_tbl <- lights_summary_data %>%
+  select(starts_with("rad_")) %>%
+  pivot_longer(everything(), names_to = "Variable", values_to = "value") %>%
+  filter(!is.na(value)) %>%
+  group_by(Variable) %>%
+  summarize(N = n(), Mean = mean(value), SD = sd(value), Min = min(value), Median = median(value), Max = max(value), .groups = "drop") %>%
+  mutate(across(where(is.numeric), ~ round(.x, 3)))
+
+knitr::kable(summary_tbl, caption = "Descriptive Summary of Light Outcomes")
+```

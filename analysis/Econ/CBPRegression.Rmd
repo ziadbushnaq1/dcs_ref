@@ -1,0 +1,806 @@
+---
+title: "Data Centers & Local Economic Impact"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+# ─── Libraries ─────────────────────────────────────────────────────────────────
+library(knitr)       # R Markdown table rendering via kable()
+library(tidyverse)   # Data wrangling (dplyr, tidyr, readr) + ggplot2 plotting
+library(sf)          # Spatial vector data: reading, transforming, joining geometries
+library(leaflet)     # Interactive HTML maps (pan, zoom, click, hover)
+library(ggplot2)     # Grammar-of-graphics static plots
+library(plotly)      # Converts ggplot2 objects → interactive HTML charts
+library(tigris)      # Downloads US Census TIGER/Line county/state shapefiles
+library(tidycensus)  # High-level Census API wrapper (ACS, Decennial)
+library(censusapi)   # Lower-level Census API wrapper — used here for County Business Patterns
+library(here)        # Constructs file paths relative to the project root (.Rproj)
+library(did)         # Callaway & Sant'Anna (2021) staggered DiD estimator
+library(ggpubr)      # Arranges multiple ggplots side-by-side (ggarrange)
+
+# ─── Global Options ────────────────────────────────────────────────────────────
+options(tigris_use_cache = TRUE)        # Cache downloaded TIGER shapefiles to avoid re-downloading
+
+# I need to store Census API key in .Renviron, not in the code
+# Run: usethis::edit_r_environ()  and add the line: CENSUS_KEY=your_key_here
+Sys.setenv(CENSUS_KEY = Sys.getenv("CENSUS_KEY"))
+
+knitr::opts_chunk$set(
+  echo      = TRUE,
+  tidy      = TRUE,
+  tidy.opts = list(width.cutoff = 60),
+  comment   = NA,
+  fig.path  = "./figures/",
+  fig.align = "center",
+  fig.width = 9,
+  fig.height = 5,
+  message   = FALSE,
+  warning   = FALSE
+)
+```
+
+## Section 1: Geography: Defining the main land US
+
+We restrict the analysis to the lower 48 contiguous states. Alaska and Hawaii have
+very different economies and are spatially disconnected; US territories are not covered
+by County Business Patterns data.
+
+```{r}
+# FIPS codes for non-contiguous states and US territories to exclude.
+# 02 = Alaska, 15 = Hawaii, 60 = American Samoa, 66 = Guam,
+# 69 = Northern Mariana Islands, 72 = Puerto Rico, 78 = US Virgin Islands
+non_contiguous_fips <- c("02", "15", "60", "66", "69", "72", "78")
+
+# Download county-level polygon boundaries from the Census TIGER/Line files.
+# cb = TRUE requests the simplified "cartographic boundary" version — smaller file,
+# loads faster, sufficient for county-level choropleth maps.
+us_counties <- counties(cb = TRUE, year = 2023)
+
+# Filter to lower 48 and reproject to WGS84 (EPSG:4326) — standard for web maps.
+lower_48_counties <- us_counties %>%
+  filter(!STATEFP %in% non_contiguous_fips) %>%
+  st_transform(crs = 4326)
+```
+
+
+## Section 2: Data Centers, Load and Spatialize
+
+```{r}
+# Read the cleaned data center CSV.
+# here() resolves the path relative to the project root so the script works
+# on any machine regardless of the user's working directory.
+# We keep only "Operational" facilities planned or under-construction sites
+# have not yet produced any economic effects.
+data_centers <- read.csv(here("data", "data_final", "economyDataFinal", "clean01EconDatacenter.csv")) %>%
+  filter(stage == "Operational") %>%
+  st_as_sf(coords = c("longitude", "latitude"), crs = 4326)
+```
+
+## Section 3: Treatment Assignment
+
+ **Why 2007?**
+> Amazon Web Services launched in 2006 and the large-scale commercial cloud computing
+> era began in 2007. This triggered a wave of data center construction that continues
+> today. Counties that received their first data center in 2007 or later are the
+> **treatment group**.
+> Counties that already had data centers before 2007 (perhaps even more recent than 2007?) are excluded because we cannot observe their pre-treatment period within our data.
+
+```{r}
+#Spatial join
+# We place each data center inside the county it geographically belongs to.
+# st_within (not st_intersects) avoids double-counting facilities that sit exactly
+# on a county border.
+# But then are we not missing data centers in independent cities?
+data_centers_county <- st_join(
+  data_centers,
+  lower_48_counties,
+  join = st_within
+)
+
+# County-level treatment classification
+# Collapse from data-center level to county level.
+# A county may host multiple data centers; we need a single status per county.
+# County-level treatment classification
+# Collapse from data-center level to county level.
+# A county may host multiple data centers; we need one treatment status per county.
+
+county_status <- data_centers_county %>%
+  st_drop_geometry() %>%
+  group_by(GEOID) %>%
+  summarize(
+    has_known_year = any(!is.na(year_operational)),
+
+    earliest_known_year = if_else(
+      has_known_year,
+      min(year_operational, na.rm = TRUE),
+      NA_real_
+    ),
+
+    .groups = "drop"
+  ) %>%
+  mutate(
+    status = case_when(
+      !has_known_year ~ "Drop: Missing Years",
+      earliest_known_year < 2007 ~ "Drop: Pre-2007 Only",
+      earliest_known_year >= 2007 ~ "Treated"
+    ),
+
+    first_dc_year = case_when(
+      status == "Treated" ~ earliest_known_year,
+      TRUE ~ NA_real_
+    )
+  )
+```
+
+```{r}
+# Join status back onto the full county polygon dataset.
+# Counties with no data centers at all receive status = "Control".
+mapping_data <- lower_48_counties %>%
+  left_join(
+    county_status %>% select(GEOID, status, first_dc_year),
+    by = "GEOID"
+  ) %>%
+  mutate(
+    status = replace_na(status, "Control"),
+    # Control counties have no treatment year, assign NA explicitly for clarity.
+    first_dc_year = replace_na(first_dc_year, NA_real_)
+  )
+```
+
+
+## Section 4: Interactive Map
+
+> The map below shows each county color-coded by its treatment status.
+
+**Notes:**
+> 
+- Are treated counties geographically clustered? Heavy clustering near
+  tech hubs (Northern Virginia, Silicon Valley) is expected, but if all treated
+  counties are in a handful of metro areas, generalizability of results will be limited.
+- Are there large contiguous blocks of control counties that look plausibly
+  similar to treated counties?
+- Do any data center dots fall outside county polygons (into water or borders)?
+  That would signal coordinate errors in the source data.
+
+```{r}
+status_palette <- colorFactor(
+  palette = c("green", "grey", "orange", "red"),
+  levels  = c("Treated", "Control", "Drop: Pre-2007 Only", "Drop: Missing Years")
+)
+
+leaflet() %>%
+  addProviderTiles(providers$CartoDB.Positron, group = "Base Map") %>%
+  addPolygons(
+    data        = mapping_data,
+    fillColor   = ~status_palette(status),
+    fillOpacity = 0.6,
+    color       = "black",
+    weight      = 1,
+    label       = ~paste0(NAMELSAD, " — ", status),
+    group       = "County Boundaries"
+  ) %>%
+  addCircleMarkers(
+    data        = data_centers,
+    color       = "black",
+    weight      = 1,
+    radius      = 3,
+    fillOpacity = 1,
+    label       = ~name,
+    group       = "Data Centers"
+  ) %>%
+  addLegend(
+    pal    = status_palette,
+    values = c("Treated", "Control", "Drop: Pre-2007 Only", "Drop: Missing Years"),
+    title  = "County Group"
+  ) %>%
+  addLayersControl(
+    overlayGroups = c("Data Centers", "County Boundaries"),
+    options       = layersControlOptions(collapsed = FALSE)
+  )
+```
+
+
+## Section 5: Sample Size Tables
+
+```{r sample-tables}
+# Full breakdown of all county groups: it tells how many counties are excluded and why.
+# A very large "Drop: Missing Years" group would probably be a red flag as it means many data centers have unknown opening years. But 254 does not seem very large compared to the other numbers 
+
+status_summary <- mapping_data %>%
+  st_drop_geometry() %>%
+  mutate(
+    status = factor(
+      status,
+      levels = c("Treated", "Control", "Drop: Pre-2007 Only", "Drop: Missing Years")
+    )
+  ) %>%
+  count(status, name = "Count") %>%
+  bind_rows(tibble(status = "Total", Count = sum(.$Count)))
+
+kable(status_summary, caption = "County Counts by Status")
+
+# Analysis sample only (the counties that go into regressions, aka treated and control).
+analysis_summary <- mapping_data %>%
+  st_drop_geometry() %>%
+  filter(status %in% c("Treated", "Control")) %>%
+  count(status, name = "Count") %>%
+  bind_rows(tibble(status = "Total Analysis Sample", Count = sum(.$Count)))
+
+kable(analysis_summary, caption = "Final Analysis Sample (Treated + Control Only)")
+```
+
+
+## Section 6: Data Center Opening Year Distribution
+
+```{r}
+# Count facilities by opening year.
+year_counts <- data_centers %>%
+  st_drop_geometry() %>%
+  filter(!is.na(year_operational)) %>%
+  count(year_operational)
+
+p <- ggplot(
+  year_counts,
+  aes(
+    x    = year_operational,
+    y    = n,
+    text = paste0("<span style='font-size:12px;'>Year: ", year_operational,
+                  "<br>Centers: ", n, "</span>")
+  )
+) +
+  geom_col(fill = "steelblue") +
+  # Red dashed line marks the treatment cutoff year.
+  geom_vline(xintercept = 2007, color = "red", linetype = "dashed", linewidth = 1) +
+  annotate("text", x = 2007, y = max(year_counts$n),
+           label = "Treatment cutoff (2007)", color = "red", hjust = -0.05) +
+  scale_x_continuous(
+    breaks = seq(min(year_counts$year_operational),
+                 max(year_counts$year_operational), by = 1)
+  ) +
+  labs(title = "Data Centers Opened by Year", x = "Opening Year", y = "Number of Centers") +
+  theme_minimal()
+
+# What this chart tells us:
+# - Is there a visible "boom" in openings after 2007? That would support the
+#   hypothesis that cloud computing triggered construction. However, there seem to be a "boom" before 2007, but that can be explain by the fact that we are missing a couple of opening year? 
+# - There are many openings before 2007, and those counties are dropped from the analysis. Is that okay?
+
+ggplotly(p, tooltip = "text")
+```
+
+
+## Section 7: Pull County Business Patterns (CBP) Data
+
+> For our report: 
+
+> County Business Patterns is an annual Census survey reporting employment, payroll,
+and establishment counts at the county level. It is the standard dataset for
+county-level labor market analysis. We pull:
+> 
+- All industries combined:  the overall economic footprint
+- NAICS 51 (Information): the sector data centers directly belong to
+- NAICS 23 (Construction): construction jobs from building the facilities
+- NAICS 54 (Professional/Scientific/Technical Services): downstream spillovers
+- NAICS 22 (Utilities): power sector impacts (data centers are enormous energy consumers)
+- More?
+
+> Why start in 2002?
+
+> We need pre-treatment observations to check that treated and control counties were
+on similar trajectories before 2007 (the "parallel trends" assumption). Starting
+in 2002 gives us roughly 5 pre-treatment years?  If the lines look parallel from
+2002–2006, we have more confidence that post-2007 divergence is caused by data
+centers rather than pre-existing differences.
+
+
+```{r pull-cbp, cache=TRUE}
+# Helper function to pull one year of CBP data for a given NAICS sector.
+# naics = NULL pulls all-industry totals.
+# We cache this chunk (cache=TRUE) because the API call takes several minutes.
+pull_cbp_year <- function(yr, naics = NULL) {
+  base_vars <- c("GEO_ID", "EMP", "PAYANN", "ESTAB")
+
+  api_args <- list(
+    name     = "cbp",
+    vintage  = yr,
+    vars     = base_vars,
+    region   = "county:*",
+    regionin = "state:*"
+  )
+
+  if (!is.null(naics)) {
+    naics_var <- if (yr >= 2017) "NAICS2017" else if (yr >= 2008) "NAICS2007" else "NAICS2002"
+    api_args[[naics_var]] <- naics
+  }
+
+  df <- tryCatch(
+    do.call(getCensus, api_args),
+    error = function(e) {
+      message("Failed: year=", yr, " naics=", naics, ": ", e$message)
+      return(NULL)
+    }
+  )
+
+  if (is.null(df)) return(NULL)
+  df$year        <- yr
+  df$naics_group <- if (is.null(naics)) "All Industries" else paste0("NAICS ", naics)
+  df
+}
+# ── Pull all-industry totals for 2003–2023 ─────────────────────────────────────
+years <- 2003:2023
+
+cbp_all <- bind_rows(lapply(years, pull_cbp_year, naics = NULL))
+
+# ── Pull sector-specific data for key NAICS codes ─────────────────────────────
+# These sectors are expected to be most directly affected by data center presence.
+naics_sectors <- c(
+  "51",   # Information — data centers are classified here
+  "23",   # Construction — building the facilities
+  "54",   # Professional/Scientific/Technical Services — knowledge spillovers
+  "22"    # Utilities — power sector impact
+)
+
+cbp_sectors <- bind_rows(
+  lapply(naics_sectors, function(naics) {
+    bind_rows(lapply(years, pull_cbp_year, naics = naics))
+  })
+)
+
+# Verify year coverage before proceeding
+cbp_sectors %>%
+  count(naics_group, year) %>%
+  group_by(naics_group) %>%
+  summarize(min_year = min(year), max_year = max(year), n_years = n_distinct(year))
+
+# Combine all-industry and sector pulls into one long dataset
+cbp_raw <- bind_rows(cbp_all, cbp_sectors)
+```
+
+```{r}
+# Construct the 5-digit county GEOID (state FIPS + county FIPS).
+# This matches the GEOID format in the spatial county data for joining.
+# To verify we can use this example: state "51" + county "019" → GEOID "51019" (Montgomery County, VA)
+cbp_clean <- cbp_raw %>%
+  mutate(
+    GEOID  = paste0(state, county),
+    EMP    = as.numeric(EMP),
+    PAYANN = as.numeric(PAYANN),
+    ESTAB  = as.numeric(ESTAB)
+  )
+```
+
+
+
+## Section 8: Validate the CBP Pull
+
+```{r}
+cat("Rows:", nrow(cbp_clean), "\n")
+cat("Years covered:", min(cbp_clean$year), "–", max(cbp_clean$year), "\n")
+cat("NAICS groups:", paste(unique(cbp_clean$naics_group), collapse = ", "), "\n\n")
+
+#Check for completely missing values
+na_summary <- cbp_clean %>%
+  summarize(
+    pct_missing_EMP    = mean(is.na(EMP))    * 100,
+    pct_missing_PAYANN = mean(is.na(PAYANN)) * 100,
+    pct_missing_ESTAB  = mean(is.na(ESTAB))  * 100
+  )
+cat("Missing value rates (%):\n")
+print(na_summary) # currently I got null, which is good!
+
+
+if (any(na_summary > 10)) {
+  warning("More than 10% of values are missing in at least one variable.")
+}
+
+# ── Check for implausible zeros ────────────────────────────────────────────────
+# CBP suppresses data for counties where reporting would reveal individual firms
+# (confidentiality). These appear as EMP = 0 or very small values.
+# For the all-industry total, a county with EMP = 0 almost certainly has
+# suppressed data, not truly zero employment.
+zero_emp <- cbp_clean %>%
+  filter(naics_group == "All Industries", EMP == 0) %>%
+  nrow()
+cat("\nCounty-years with EMP = 0 (all industries):", zero_emp, "\n") #503
+
+# Distribution check
+# Print a quick summary of the three key variables (all-industry, most recent year).
+cat("\nDistribution of key variables (All Industries, most recent year):\n")
+cbp_clean %>%
+  filter(naics_group == "All Industries", year == max(year)) %>%
+  select(EMP, PAYANN, ESTAB) %>%
+  summary() %>%
+  print()
+
+# We have some extreme maximum values > 2,000,000 but that most likely reflect large metro counties 
+
+cbp_clean %>%
+  filter(EMP < 0 | PAYANN < 0 | ESTAB < 0) %>%
+  nrow() %>%
+  cat("Rows with negative values:", ., "\n") # no negative values, which is good
+```
+
+## Section 9: Inflation Adjustment
+
+Annual payroll (`PAYANN`) is in *nominal* dollars, it is not adjusted for inflation. We deflate to **2017 constant dollars** using the
+CPI-U (Consumer Price Index for All Urban Consumers).
+
+> The deflation factors below come from the Bureau of Labor Statistics CPI-U annual
+> averages.
+
+```{r}
+# CPI-U annual averages (Base: 2017 = 100).
+# Source: BLS CPI-U, All Items, Annual Average, Series CUUR0000SA0
+# https://www.bls.gov/cpi/
+cpi_u <- tibble(
+  year = 2002:2023,
+  cpi  = c(
+    179.9,  # 2002
+    184.0,  # 2003
+    188.9,  # 2004
+    195.3,  # 2005
+    201.6,  # 2006
+    207.3,  # 2007
+    215.3,  # 2008
+    214.5,  # 2009
+    218.1,  # 2010
+    224.9,  # 2011
+    229.6,  # 2012
+    233.0,  # 2013
+    236.7,  # 2014
+    237.0,  # 2015
+    240.0,  # 2016
+    245.1,  # 2017  ← base year (100)
+    251.1,  # 2018
+    255.7,  # 2019
+    258.8,  # 2020
+    270.9,  # 2021
+    292.7,   # 2022
+    304.7   # 2023
+    
+  )
+)
+
+# Compute the deflation factor for each year relative to the 2017 base.
+# deflator = CPI_2017 / CPI_year
+# Multiplying nominal values by the deflator converts them to 2017 constant dollars.
+cpi_base <- cpi_u$cpi[cpi_u$year == 2017]
+
+cpi_u <- cpi_u %>%
+  mutate(deflator = cpi_base / cpi)
+
+# Join deflators onto CBP data and compute real payroll.
+cbp_real <- cbp_clean %>%
+  left_join(cpi_u, by = "year") %>%
+  mutate(
+    # PAYANN_REAL: payroll in 2017 constant dollars
+    # PAYANN is in $1,000s so the unit of PAYANN_REAL is also $1,000s (2017 dollars).
+    PAYANN_REAL = PAYANN * deflator
+  )
+```
+
+
+
+## Section 10: Merge with Treatment Status
+
+```{r}
+# Pull treatment status and first data center year for analysis counties only.
+# We drop "Drop" categories here as they are ambiguous and cannot be cleanly
+# assigned to treatment or control.
+analysis_counties <- mapping_data %>%
+  st_drop_geometry() %>%
+  filter(status %in% c("Treated", "Control")) %>%
+  select(GEOID, status, first_dc_year)
+
+# Join CBP panel onto analysis counties.
+# filter(!is.na(status)) removes CBP rows for counties that were dropped.
+cbp_analysis <- cbp_real %>%
+  left_join(analysis_counties, by = "GEOID") %>%
+  filter(!is.na(status)) %>%
+  # Replace suppressed zeros with NA so they don't drag down medians.
+  mutate(
+    EMP    = if_else(EMP    == 0, NA_real_, EMP),
+    PAYANN = if_else(PAYANN == 0, NA_real_, PAYANN),
+    PAYANN_REAL = if_else(PAYANN_REAL == 0, NA_real_, PAYANN_REAL),
+    ESTAB  = if_else(ESTAB  == 0, NA_real_, ESTAB)
+  )
+```
+
+## Section 10b: ACS data 
+
+```{r acs-data, cache=TRUE}
+acs_years <- 2009:2023
+
+pull_acs_year <- function(yr) {
+
+  if (yr <= 2018) {
+    vars <- c(
+      median_income = "DP03_0062",
+      unemployment_rate = "DP03_0009P",
+      pct_bachelors = "DP02_0061P",
+      pct_hs_grad = "DP02_0067P",
+      total_pop = "B01003_001"
+    )
+  } else {
+    vars <- c(
+      median_income = "DP03_0062",
+      unemployment_rate = "DP03_0009P",
+      pct_bachelors = "DP02_0062P",
+      pct_hs_grad = "DP02_0068P",
+      total_pop = "B01003_001"
+    )
+  }
+
+  get_acs(
+    geography = "county",
+    variables = vars,
+    year = yr,
+    survey = "acs5"
+  ) %>%
+    mutate(year = yr)
+}
+
+acs_raw <- bind_rows(lapply(acs_years, pull_acs_year))
+
+acs_covariates <- acs_raw %>%
+  select(GEOID, year, variable, estimate) %>%
+  pivot_wider(names_from = variable, values_from = estimate) %>%
+  mutate(
+    log_pop = log(total_pop),
+    log_median_income = log(median_income)
+  ) %>%
+  select(
+    GEOID,
+    year,
+    log_pop,
+    log_median_income,
+    unemployment_rate,
+    pct_hs_grad,
+    pct_bachelors
+  )
+
+cbp_analysis_acs <- cbp_analysis %>%
+  left_join(acs_covariates, by = c("GEOID", "year")) %>%
+  filter(year >= 2009)
+
+cat("Rows in ACS-matched analysis panel:", nrow(cbp_analysis_acs), "\n")
+
+cbp_analysis_acs %>%
+  filter(naics_group == "All Industries") %>%
+  summarize(
+    missing_log_pop = mean(is.na(log_pop)) * 100,
+    missing_income = mean(is.na(log_median_income)) * 100,
+    missing_unemployment = mean(is.na(unemployment_rate)) * 100,
+    missing_hs = mean(is.na(pct_hs_grad)) * 100,
+    missing_bs = mean(is.na(pct_bachelors)) * 100
+  ) %>%
+  print()
+```
+
+## Section 14: Staggered DiD Estimation
+> Y_ct = β · D_ct + α_c + δ_t + ε_ct
+
+```{r}
+# Helper function: run full C&S DiD for any outcome variable
+run_did <- function(outcome_var, outcome_label, data) {
+
+  df <- data %>%
+    filter(naics_group == "All Industries") %>%
+    filter(!is.na(.data[[outcome_var]]), .data[[outcome_var]] > 0) %>%
+    mutate(
+      county_id = as.integer(factor(GEOID)),
+      G = if_else(
+        status == "Treated" & !is.na(first_dc_year),
+        as.integer(first_dc_year),
+        0L
+      ),
+      outcome = log(.data[[outcome_var]])
+    )
+
+  cs <- att_gt( yname = "outcome", tname = "year", idname = "county_id", gname = "G", data = df, control_group = "nevertreated", est_method = "reg", clustervars = "county_id", )
+
+  att_overall <- aggte(cs, type = "simple")
+  att_cal <- aggte(cs, type = "calendar")
+  att_dyn <- aggte(cs, type = "dynamic")
+
+  p_cal <- ggdid(att_cal) +
+    labs(
+      title = paste("Calendar Year Effects —", outcome_label),
+      subtitle = "Callaway & Sant'Anna DiD | Never-treated controls",
+      x = "Calendar Year",
+      y = paste0("ATT (log ", outcome_label, ")")
+    )
+
+  p_event <- ggdid(att_dyn) + geom_vline(xintercept = -0.5, linetype = "dashed", color = "red") + labs(
+      title = paste("Event Study —", outcome_label), subtitle = "Red line = treatment onset", x = "Years Relative to First Data Center Opening", y = paste0("ATT (log ", outcome_label, ")"))
+
+  list( label = outcome_label, cs = cs, overall = att_overall, calendar = att_cal, dynamic = att_dyn, p_cal = p_cal, p_event = p_event
+  )
+}
+
+#  Run for each outcome
+outcomes <- list(
+  list(var = "EMP",         label = "Employment"),
+  list(var = "PAYANN_REAL", label = "Real Annual Payroll (2017 $)"),
+  list(var = "ESTAB",       label = "Establishments")
+)
+
+did_results <- lapply(outcomes, function(o) {
+  run_did(
+    outcome_var   = o$var,
+    outcome_label = o$label,
+    data          = cbp_analysis
+  )
+})
+
+# Name the list
+names(did_results) <- c("employment", "payroll", "establishments")
+
+
+#  Access individual plots 
+did_results$employment$p_event
+did_results$payroll$p_event
+did_results$establishments$p_event
+
+```
+## section DID cutoff date 2012 without controls
+```{r did-cutoff-2012-no-controls}
+run_did_2012 <- function(outcome_var, outcome_label, data) {
+  df <- data %>%
+    filter(naics_group == "All Industries") %>%
+    filter(status == "Control" | (status == "Treated" & first_dc_year >= 2012 & first_dc_year <= 2020)) %>%
+    filter(!is.na(.data[[outcome_var]]), .data[[outcome_var]] > 0) %>%
+    mutate(county_id = as.integer(factor(GEOID)), G = if_else(status == "Treated" & !is.na(first_dc_year), as.integer(first_dc_year), 0L), outcome = log(.data[[outcome_var]]))
+
+  cs <- att_gt(yname = "outcome", tname = "year", idname = "county_id", gname = "G", xformla = ~ 1, control_group = "nevertreated", clustervars = "county_id", data = df)
+
+  att_overall <- aggte(cs, type = "simple")
+  att_dyn <- aggte(cs, type = "dynamic")
+
+  p_event <- ggdid(att_dyn) +
+    geom_vline(xintercept = -0.5, linetype = "dashed", color = "red") +
+    coord_cartesian(ylim = c(-0.2, 0.25)) +
+    labs(title = paste("Event Study —", outcome_label), subtitle = "2012–2020 cohorts | No controls", x = "Years Relative to First Data Center Opening", y = paste0("ATT (log ", outcome_label, ")"))
+
+  list(label = outcome_label, cs = cs, overall = att_overall, dynamic = att_dyn, p_event = p_event)
+}
+
+did_results_2012 <- lapply(outcomes, function(o) {
+  run_did_2012(outcome_var = o$var, outcome_label = o$label, data = cbp_analysis)
+})
+names(did_results_2012) <- c("employment", "payroll", "establishments")
+
+did_results_2012$employment$p_event
+did_results_2012$payroll$p_event
+did_results_2012$establishments$p_event
+```
+## Section DID cutoff date 2012 without controls — Not-Yet-Treated
+```{r did-cutoff-2012-no-controls-nyt}
+run_did_2012_nyt <- function(outcome_var, outcome_label, data) {
+  df <- data %>%
+    filter(naics_group == "All Industries") %>%
+    filter(status == "Control" | (status == "Treated" & first_dc_year >= 2012 & first_dc_year <= 2020)) %>%
+    filter(!is.na(.data[[outcome_var]]), .data[[outcome_var]] > 0) %>%
+    mutate(county_id = as.integer(factor(GEOID)), G = if_else(status == "Treated" & !is.na(first_dc_year), as.integer(first_dc_year), 0L), outcome = log(.data[[outcome_var]]))
+
+  cs <- att_gt(yname = "outcome", tname = "year", idname = "county_id", gname = "G", xformla = ~ 1, control_group = "notyettreated", clustervars = "county_id", data = df)
+
+  att_overall <- aggte(cs, type = "simple")
+  att_dyn <- aggte(cs, type = "dynamic")
+
+  p_event <- ggdid(att_dyn) +
+    geom_vline(xintercept = -0.5, linetype = "dashed", color = "red") +
+    coord_cartesian(ylim = c(-0.2, 0.25)) +
+    labs(title = paste("Event Study —", outcome_label), subtitle = "2012–2020 cohorts | No controls | Not-yet-treated control", x = "Years Relative to First Data Center Opening", y = paste0("ATT (log ", outcome_label, ")"))
+
+  list(label = outcome_label, cs = cs, overall = att_overall, dynamic = att_dyn, p_event = p_event)
+}
+
+did_results_2012_nyt <- lapply(outcomes, function(o) {
+  run_did_2012_nyt(outcome_var = o$var, outcome_label = o$label, data = cbp_analysis)
+})
+names(did_results_2012_nyt) <- c("employment", "payroll", "establishments")
+
+did_results_2012_nyt$employment$p_event
+did_results_2012_nyt$payroll$p_event
+did_results_2012_nyt$establishments$p_event
+```
+## section DID with ACS controls
+```{r did-with-acs-controls}
+run_did_acs <- function(outcome_var, outcome_label, data) {
+
+  df <- data %>%
+    filter(naics_group == "All Industries") %>%
+      filter(status == "Control" | (status == "Treated" & first_dc_year >= 2012 & first_dc_year <= 2020)) %>%
+    filter(!is.na(.data[[outcome_var]]), .data[[outcome_var]] > 0) %>%
+    filter(!is.na(log_pop), !is.na(log_median_income), !is.na(pct_bachelors)) %>%
+    
+    mutate(county_id = as.integer(factor(GEOID)), G = if_else(status == "Treated" & !is.na(first_dc_year), as.integer(first_dc_year), 0L),
+      outcome = log(.data[[outcome_var]])
+    )
+
+  cs <- att_gt(yname = "outcome", tname = "year", idname = "county_id", gname = "G", xformla = ~ log_pop + log_median_income + pct_bachelors,
+    control_group = "nevertreated",
+    clustervars = "county_id",
+    data = df,
+  )
+
+  att_overall <- aggte(cs, type = "simple")
+  att_dyn <- aggte(cs, type = "dynamic")
+
+  p_event <- ggdid(att_dyn) +
+  geom_vline(xintercept = -0.5, linetype = "dashed", color = "red") +
+  coord_cartesian(ylim = c(-0.2, 0.25)) +
+  labs(
+      title = paste("ACS-Controlled Event Study —", outcome_label),
+      subtitle = "2009–2020 sample | ACS controls included",
+      x = "Years Relative to First Data Center Opening",
+      y = paste0("ATT (log ", outcome_label, ")")
+    )
+
+  list(
+    label = outcome_label,
+    cs = cs,
+    overall = att_overall,
+    dynamic = att_dyn,
+    p_event = p_event
+  )
+}
+
+did_results_acs <- lapply(outcomes, function(o) {
+  run_did_acs( outcome_var = o$var, outcome_label = o$label, data = cbp_analysis_acs)
+})
+
+names(did_results_acs) <- c("employment", "payroll", "establishments")
+
+did_results_acs$employment$p_event
+did_results_acs$payroll$p_event
+did_results_acs$establishments$p_event
+
+```
+
+## Section DID with ACS controls — Not-Yet-Treated
+```{r did-with-acs-controls-nyt}
+run_did_acs_nyt <- function(outcome_var, outcome_label, data) {
+  df <- data %>%
+    filter(naics_group == "All Industries") %>%
+    filter(status == "Control" | (status == "Treated" & first_dc_year >= 2012 & first_dc_year <= 2020)) %>%
+    filter(!is.na(.data[[outcome_var]]), .data[[outcome_var]] > 0) %>%
+    filter(!is.na(log_pop), !is.na(log_median_income), !is.na(pct_bachelors)) %>%
+    mutate(county_id = as.integer(factor(GEOID)), G = if_else(status == "Treated" & !is.na(first_dc_year), as.integer(first_dc_year), 0L), outcome = log(.data[[outcome_var]]))
+
+  cs <- att_gt(yname = "outcome", tname = "year", idname = "county_id", gname = "G", xformla = ~ log_pop + log_median_income + pct_bachelors, control_group = "notyettreated", clustervars = "county_id", data = df)
+
+  att_overall <- aggte(cs, type = "simple")
+  att_dyn <- aggte(cs, type = "dynamic")
+
+  p_event <- ggdid(att_dyn) +
+    geom_vline(xintercept = -0.5, linetype = "dashed", color = "red") +
+    coord_cartesian(ylim = c(-0.2, 0.25)) +
+    labs(title = paste("ACS-Controlled Event Study —", outcome_label), subtitle = "2009–2020 sample | ACS controls | Not-yet-treated control", x = "Years Relative to First Data Center Opening", y = paste0("ATT (log ", outcome_label, ")"))
+
+  list(label = outcome_label, cs = cs, overall = att_overall, dynamic = att_dyn, p_event = p_event)
+}
+
+did_results_acs_nyt <- lapply(outcomes, function(o) {
+  run_did_acs_nyt(outcome_var = o$var, outcome_label = o$label, data = cbp_analysis_acs)
+})
+names(did_results_acs_nyt) <- c("employment", "payroll", "establishments")
+
+did_results_acs_nyt$employment$p_event
+did_results_acs_nyt$payroll$p_event
+did_results_acs_nyt$establishments$p_event
+```
+
+## Section 15: Export Analysis Panel
+
+```{r export}
+# Save the final analysis panel to disk.
+# This file contains one row per county × year × NAICS group,
+# with treatment status, real payroll, log employment, and all CBP variables.
+write_csv(
+  cbp_analysis,
+  here("data", "cbp_analysis_panel.csv")
+)
+
+```

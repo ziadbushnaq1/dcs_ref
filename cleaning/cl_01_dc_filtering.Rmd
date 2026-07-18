@@ -1,0 +1,200 @@
+---
+title: "cl_01_dc_filtering"
+output: html_document
+editor_options: 
+  chunk_output_type: inline
+---
+
+```{r setup, include=FALSE}
+# This is the setup chunk
+#  Here you can set global options for the entire document
+
+library(knitr) # I recommend doing this here
+library(tidyverse)
+library(sf)
+library(here)
+library(exactextractr)
+library(terra)
+library(purrr)
+library(tigris)
+library(ggplot2)
+library(ggrepel)
+library(fixest)
+
+options(tigris_use_cache = TRUE)
+
+# Although you can call functions from a library using the following notation
+#  without loading the entire library.
+knitr::opts_chunk$set(echo = TRUE, 
+                      tidy = TRUE,
+                      tidy.opts = list(width.cutoff = 60),
+                      comment = NA, # Required
+                      fig.path = "./figures/",  # Store all figures here in relative path (make the folder first)
+                      fig.align = "center",
+                      fig.width = 7,
+                      fig.height = 7,
+                      message = FALSE, # Turn off load messages
+                      warning = FALSE # Turn off warnings
+                      )
+
+```
+
+```{r}
+data_centers <- read_csv(here('data', 'data_final', 'clean01_datacenter.csv'))
+```
+
+```{r}
+filter_dc_base <- function(df, year_min, year_max, hyperscale_only = FALSE) {
+  base <- df %>%
+    filter(!is.na(year_operational), stage == "Operational",
+           year_operational >= year_min, year_operational <= year_max)
+  if (hyperscale_only) {
+    base <- base %>% filter(capacity_type == "Hyperscaler")
+  }
+  base
+}
+
+filter_isolated <- function(df, threshold_m) {
+  df %>% filter(dist_to_nearest_dc_m >= threshold_m)
+}
+
+build_isolation_sets <- function(df, sensor_years, thresholds) {
+  # Non-hyperscale: vary by isolation threshold, as before
+  combos <- expand_grid(
+    sensor      = names(sensor_years),
+    threshold_m = thresholds
+  )
+
+  iso_sets <- combos %>%
+    pmap(function(sensor, threshold_m) {
+      yrs  <- sensor_years[[sensor]]
+      base <- filter_dc_base(df, yrs[1], yrs[2], hyperscale_only = FALSE)
+      filter_isolated(base, threshold_m)
+    })
+
+  names(iso_sets) <- combos %>%
+    mutate(name = paste0(sensor, "_iso", threshold_m, "m")) %>%
+    pull(name)
+
+  # Hyperscale: no isolation-distance filter applied (every
+  # threshold from 2500m-10000m returned 0 rows - hyperscale
+  # facilities cluster near other DCs, one set per sensor 
+  hyperscale_sets <- map(names(sensor_years), function(sensor) {
+    yrs <- sensor_years[[sensor]]
+    filter_dc_base(df, yrs[1], yrs[2], hyperscale_only = TRUE)
+  })
+  names(hyperscale_sets) <- paste0(names(sensor_years), "_hyperscale_all")
+  
+  # All Facilities: no isolation-distance filter applied for Landsat years
+  landsat_all_set <- list()
+  if ("landsat" %in% names(sensor_years)) {
+    landsat_yrs <- sensor_years[["landsat"]]
+    landsat_all_set[["landsat_all"]] <- filter_dc_base(df, landsat_yrs[1], landsat_yrs[2], hyperscale_only = FALSE)
+  }
+
+  return(c(iso_sets, hyperscale_sets, landsat_all_set))
+}
+
+```
+
+```{r}
+sensor_years <- list(modis = c(2001, 2024), landsat = c(2014, 2024))
+thresholds   <- c(10000, 7500, 5000, 2500)
+
+isolation_sets <- build_isolation_sets(data_centers, sensor_years, thresholds)
+```
+
+```{r}
+export_isolated_shp <- function(df, name, out_dir = here("data", "data_raw", "shp")) {
+  if (!dir.exists(out_dir)) dir.create(out_dir, recursive = TRUE)
+
+  export_sf <- df %>%
+    st_as_sf(coords = c("projected_x", "projected_y"), crs = 5070) %>%
+    select(export_id) %>%
+    st_transform(4326)  # GEE expects WGS84 lon/lat for FeatureCollection ingestion
+
+  out_path <- file.path(out_dir, paste0(name, ".shp"))
+  st_write(export_sf, out_path, delete_layer = TRUE)
+  out_path
+}
+```
+
+```{r}
+walk2(isolation_sets, names(isolation_sets), export_isolated_shp)
+```
+
+```{r}
+# Save each isolation set as a CSV so analysis scripts can read them
+# directly without re-running filtering logic
+out_dir <- here("data", "data_final", "isolation_sets")
+dir.create(out_dir, showWarnings = FALSE, recursive = TRUE)
+
+walk2(isolation_sets, names(isolation_sets), function(df, name) {
+  write_csv(df, file.path(out_dir, paste0(name, ".csv")))
+})
+```
+
+
+```{r all146-set}
+dc_146 <- data_centers %>%
+  filter(stage == "Operational",
+         !is.na(year_operational),
+         year_operational >= 2014, year_operational <= 2024)
+
+cat("All-146 set:", nrow(dc_146), "DCs\n")
+
+export_isolated_shp(dc_146, "landsat_all146")
+
+out_dir <- here("data", "data_final", "isolation_sets")
+write_csv(dc_146, file.path(out_dir, "landsat_all.csv"))
+```
+
+```{r pre2014-set}
+out_dir <- here("data", "data_final", "isolation_sets")
+dc_pre2014 <- data_centers %>%
+  filter(stage == "Operational",
+         !is.na(year_operational),
+         capacity_type == "Hyperscaler",          
+         year_operational >= 2000,
+         year_operational <= 2013)
+cat("Pre-2014 hyperscale set:", nrow(dc_pre2014), "DCs",
+    "| in 2012-13 seam cohort:", sum(dc_pre2014$year_operational >= 2012), "\n")
+export_isolated_shp(dc_pre2014, "landsat_pre2014")
+write_csv(dc_pre2014, file.path(out_dir, "landsat_pre2014.csv"))
+```
+```{r}
+dc_pre2014_priority <- dc_pre2014 %>%
+  mutate(
+    is_hyperscale = capacity_type == "Hyperscaler",
+    # isolation still matters for the CONTROL ring even under intensity —
+    # a colo in a Manhattan block has no clean 1-7.5km annulus either
+    reasonably_sited = dist_to_nearest_dc_m >= 1000    # loose, not the old 2500
+  ) %>%
+  arrange(desc(is_hyperscale), desc(dist_to_nearest_dc_m))
+
+# Tier 1: all pre-2014 hyperscale (your advisor's focus + sample-size goal)
+tier1 <- dc_pre2014_priority %>% filter(is_hyperscale)
+# Tier 2: non-hyperscale with >= 1km separation, capped
+tier2 <- dc_pre2014_priority %>% filter(!is_hyperscale) %>%
+  slice_head(n = max(0, 60 - nrow(tier1)))
+
+dc_pre2014_final <- bind_rows(tier1, tier2)
+cat("Tier 1 (hyperscale):", nrow(tier1),
+    "| Tier 2:", nrow(tier2),
+    "| Total:", nrow(dc_pre2014_final), "\n")
+```
+
+
+```{r hyperscale-noyear-set}
+dc_hs_extra <- data_centers %>%
+  filter(capacity_type == "Hyperscaler", stage == "Operational") %>%
+  # everything hyperscale-operational, year known or not
+  distinct(export_id, .keep_all = TRUE)
+
+cat("Hyperscale (all, incl. missing year):", nrow(dc_hs_extra),
+    "| missing year_operational:", sum(is.na(dc_hs_extra$year_operational)), "\n")
+export_isolated_shp(dc_hs_extra, "landsat_hs_extra")
+write_csv(dc_hs_extra, file.path(out_dir, "landsat_hs_extra.csv"))
+```
+
+

@@ -1,0 +1,180 @@
+/* ============================================================
+   www/styles.css — App-wide Styles
+   ============================================================ */
+
+:root {
+  --maroon: #861F41;
+  --orange: #CA4F00;
+  --ridge: #2A6F77;
+  --ink: #1F2933;
+  --parchment: #FAF7F2;
+  --surface: #FFFFFF;
+  --mist: #E4DED2;
+  --radius: 10px;
+  --shadow-sm: 0 1px 3px rgba(31, 41, 51, 0.08);
+  --shadow-md: 0 8px 24px rgba(31, 41, 51, 0.14);
+}
+/* --- General ------------------------------------------------ */
+body {
+  background-color: var(--parchment);
+  color: var(--ink);
+}
+h1, h2, h3, h4 {
+  font-family: "Fraunces", Georgia, serif;
+  font-weight: 600;
+  color: var(--maroon);
+  letter-spacing: -0.01em;
+}
+
+/* --- Navbar ------------------------------------------------- */
+.navbar {
+  background-color: #861F41 !important; /*whole nav bar background-color*/
+}
+.navbar .navbar-brand,
+.navbar-default .navbar-nav > li > a {
+  color: #ffffff !important;
+}
+.navbar-default .navbar-nav > .active > a {
+  background-color: #CA4F00 !important;
+  color: #ffffff !important;
+}
+
+/* --- Tab header --------------------------------------------- */
+.tab-header {
+  padding: 20px 0 10px 0;
+  border-bottom: 2px solid #e0e0e0;
+  margin-bottom: 20px;
+}
+.tab-header h1 {
+  margin-bottom: 4px;
+}
+.subtitle {
+  color: #000000;
+  font-size: 1.1em;
+}
+
+/* --- Cards (Info / Control / Team) ------------------------------ */
+.info-card,
+.control-panel,
+.team-card {
+  background: var(--surface);
+  border: 1px solid var(--mist);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow-sm);
+  transition: box-shadow 0.25s ease, transform 0.25s ease;
+}
+.info-card {
+  padding: 18px 22px;
+  margin-top: 10px;
+}
+.control-panel {
+  padding: 18px;
+}
+.team-card {
+  text-align: center;
+  padding: 20px 16px;
+  margin-bottom: 20px;
+}
+.team-card:hover {
+  transform: translateY(-3px);
+  box-shadow: var(--shadow-md);
+}
+.team-photo {
+  width: 120px;
+  height: 120px;
+  border-radius: 50%;
+  object-fit: cover;
+  margin-bottom: 10px;
+  border: 3px solid var(--mist);
+}
+ 
+/* --- Control panel (Maps tab) ------------------------------- */
+.control-panel {
+  background: #f9f9f9;
+  border: 1px solid #ddd;
+  border-radius: 6px;
+  padding: 16px;
+}
+
+/* --- Report body --------------------------------------------------- */
+.report-body {
+  max-width: 800px;
+  line-height: 1.75;
+  font-size: 1.02rem;
+}
+.report-body h3 {
+  margin-top: 28px;
+  border-left: 3px solid var(--orange);
+  padding-left: 12px;
+}
+ 
+/* --- Buttons ------------------------------------------------------- */
+.btn-primary {
+  background-color: var(--maroon);
+  border-color: var(--maroon);
+}
+.btn-primary:hover {
+  background-color: #6e1934;
+  border-color: #6e1934;
+}s
+
+/* --- Leaflet map height fix --------------------------------- */
+.leaflet-container {
+  border-radius: 6px;
+  border: 1px solid #ccc;
+}
+
+/* ============================================================
+   Economics tab — clickable accordion styling
+   Append these rules to www/styles.css
+   ============================================================ */
+
+.econ-accordion {
+  border: 1px solid #d0d7de;
+  border-radius: 6px;
+  margin-bottom: 14px;
+  overflow: hidden;
+  background: #ffffff;
+}
+
+/* The clickable header bar — looks like a button, not plain text. */
+.econ-accordion-summary {
+  cursor: pointer;
+  list-style: none;                 /* hide the default browser triangle */
+  padding: 12px 16px;
+  font-weight: 600;
+  font-size: 16px;
+  background: #f0f4f8;
+  border-bottom: 1px solid transparent;
+  user-select: none;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  transition: background 0.15s ease;
+}
+
+.econ-accordion-summary::-webkit-details-marker { display: none; } /* Safari */
+
+.econ-accordion-summary:hover {
+  background: #e2e9f0;
+}
+
+/* Caret rotates from pointing-right (closed) to pointing-down (open). */
+.econ-accordion-caret {
+  display: inline-block;
+  font-size: 12px;
+  color: #4C78A8;
+  transition: transform 0.15s ease;
+}
+
+.econ-accordion[open] > .econ-accordion-summary .econ-accordion-caret {
+  transform: rotate(90deg);
+}
+
+.econ-accordion[open] > .econ-accordion-summary {
+  border-bottom-color: #d0d7de;
+}
+
+.econ-accordion-body {
+  padding: 14px 16px;
+}

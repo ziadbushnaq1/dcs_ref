@@ -1,0 +1,25 @@
+---
+title: "exploratory"
+output: html_document
+---
+
+```{r}
+library(tidyverse)
+library(here)
+```
+
+
+```{r}
+dat <- read.csv(here('data', 'data_final', 'clean01_datacenter.csv'))
+```
+
+```{r}
+dat %>% filter(stage == "Operational", capacity_type== "Hyperscaler") %>% nrow()
+dat %>% filter(stage == "Operational", capacity_type== "Hyperscaler", !is.na(year_operational)) %>% nrow()
+dat %>% filter(stage == "Operational", capacity_type== "Hyperscaler", !is.na(power_builtout)) %>% nrow()
+```
+```{r}
+dat %>% filter(stage == "Operational", year_operational <= 2024, year_operational >= 2014) %>% nrow()
+```
+
+

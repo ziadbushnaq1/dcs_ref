@@ -1,0 +1,601 @@
+---
+title: "Data Centers & Local Economic Impact: ACS Sector Employment DiD (Debug)"
+date: "`r Sys.Date()`"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+# Self-contained debugging file for the ACS-sourced sector employment DiD.
+# Pulled from the main document: Sections 1-7 (data build, unmodified) +
+# Section 8 sector outcome list (ACS-sourced) + Section 10 sector DiD functions
+# (ACS-sourced, with the GEOID/year dedup fix and aian-as-reference covariate fix).
+# Knit this file top to bottom to reproduce cbp_analysis_acs and the sector
+# results independently of the main report.
+library(knitr)
+library(tidyverse)
+library(sf)
+library(tigris)
+library(tidycensus)
+library(censusapi)
+library(here)
+library(did)
+
+options(tigris_use_cache = TRUE)
+Sys.setenv(CENSUS_KEY = Sys.getenv("CENSUS_KEY"))
+
+knitr::opts_chunk$set(
+  echo    = TRUE,
+  tidy    = TRUE,
+  tidy.opts = list(width.cutoff = 60),
+  comment   = NA,
+  fig.path  = "./figures-sector-debug/",
+  fig.align = "center",
+  fig.width  = 9,
+  fig.height = 5,
+  message = FALSE,
+  warning = FALSE
+)
+```
+
+---
+
+## Section 1: County Boundaries
+
+Download lower-48 county polygons from Census TIGER/Line. These are needed for the
+spatial join that assigns each data center to a county.
+
+```{r county-boundaries}
+non_contiguous_fips <- c("02", "15", "60", "66", "69", "72", "78")
+
+lower_48_counties <- counties(cb = TRUE, year = 2023) %>%
+  filter(!STATEFP %in% non_contiguous_fips) %>%
+  st_transform(crs = 4326)
+```
+
+---
+
+## Section 2: Load Data Centers
+
+Read the cleaned data center CSV and convert to a spatial object so each facility
+can be matched to the county it falls within.
+
+```{r load-datacenters}
+data_centers <- read.csv(here("data", "clean01_datacenter.csv")) %>%
+  filter(stage == "Operational") %>%
+  st_as_sf(coords = c("longitude", "latitude"), crs = 4326)
+```
+
+---
+
+## Section 3: Treatment Assignment
+
+Assign each county a treatment status based on when its first data center opened.
+Counties with a first opening in 2007 or later are **Treated**; counties with no
+data center are **Control**; counties with openings only before 2007, or with
+unknown opening years, are dropped — their pre-treatment period is unobservable.
+
+```{r treatment-assignment}
+data_centers_county <- st_join(data_centers, lower_48_counties, join = st_within)
+
+county_status <- data_centers_county %>%
+  st_drop_geometry() %>%
+  group_by(GEOID) %>%
+  summarize(
+    has_known_year      = any(!is.na(year_operational)),
+    earliest_known_year = if_else(has_known_year, min(year_operational, na.rm = TRUE), NA_real_),
+    .groups = "drop"
+  ) %>%
+  mutate(
+    status = case_when(
+      !has_known_year             ~ "Drop: Missing Years",
+      earliest_known_year < 2007  ~ "Drop: Pre-2007 Only",
+      earliest_known_year >= 2007 ~ "Treated"
+    ),
+    first_dc_year = case_when(
+      status == "Treated" ~ earliest_known_year,
+      TRUE                ~ NA_real_
+    )
+  )
+
+mapping_data <- lower_48_counties %>%
+  left_join(county_status %>% select(GEOID, status, first_dc_year), by = "GEOID") %>%
+  mutate(
+    status       = replace_na(status, "Control"),
+    first_dc_year = replace_na(first_dc_year, NA_real_)
+  )
+```
+
+---
+
+## Section 4: Pull CBP Data
+
+Pull County Business Patterns data for 2003–2023, covering both all-industry totals
+and the four sectors most likely affected by data centers: Information (51),
+Construction (23), Professional Services (54), and Utilities (22).
+
+Note: this pull is retained here only because `cbp_analysis` (built in Section 6)
+feeds `cbp_analysis_acs` in Section 7, which the sector DiD depends on. The sector
+DiD itself does not use CBP NAICS data directly — see Section 10.
+
+```{r pull-cbp, cache=TRUE}
+pull_cbp_year <- function(yr, naics = NULL) {
+  base_vars <- c("GEO_ID", "EMP", "PAYANN", "ESTAB")
+  api_args  <- list(
+    name     = "cbp",
+    vintage  = yr,
+    vars     = base_vars,
+    region   = "county:*",
+    regionin = "state:*"
+  )
+
+  if (!is.null(naics)) {
+    naics_var <- case_when(
+      yr >= 2017 ~ "NAICS2017",
+      yr >= 2012 ~ "NAICS2012",
+      yr >= 2008 ~ "NAICS2007",
+      TRUE       ~ "NAICS2002"
+    )
+    api_args[[naics_var]] <- naics
+  }
+
+  df <- tryCatch(
+    do.call(getCensus, api_args),
+    error = function(e) {
+      message("Failed: year=", yr, " naics=", naics, ": ", e$message)
+      return(NULL)
+    }
+  )
+  if (is.null(df)) return(NULL)
+
+  df$year        <- yr
+  df$naics_group <- if (is.null(naics)) "All Industries" else paste0("NAICS ", naics)
+  df
+}
+
+years <- 2003:2023
+
+# All-industry pull
+cbp_all <- bind_rows(lapply(years, pull_cbp_year, naics = NULL))
+
+# Sector-level pulls: Information (51), Construction (23),
+# Professional Services (54), Utilities (22)
+naics_sectors <- c("51", "23", "54", "22")
+cbp_sectors   <- bind_rows(
+  lapply(naics_sectors, function(naics) bind_rows(lapply(years, pull_cbp_year, naics = naics)))
+)
+
+cbp_raw <- bind_rows(cbp_all, cbp_sectors)
+```
+
+---
+
+## Section 5: Clean CBP & Inflation Adjustment
+
+Construct county GEOIDs, deflate nominal payroll to 2017 constant dollars using
+BLS CPI-U annual averages, and replace suppressed zeros with NA.
+
+```{r clean-cbp}
+cbp_clean <- cbp_raw %>%
+  mutate(
+    GEOID  = paste0(state, county),
+    EMP    = as.numeric(EMP),
+    PAYANN = as.numeric(PAYANN),
+    ESTAB  = as.numeric(ESTAB)
+  )
+
+# CPI-U annual averages (base year 2017 = 245.1).
+# Source: BLS CPI-U, All Items, Annual Average, Series CUUR0000SA0.
+cpi_u <- tibble(
+  year = 2003:2023,
+  cpi  = c(
+    184.0, 188.9, 195.3, 201.6, 207.3, 215.3, 214.5, 218.1,
+    224.9, 229.6, 233.0, 236.7, 237.0, 240.0, 245.1, 251.1,
+    255.7, 258.8, 270.9, 292.7, 304.7
+  )
+) %>%
+  mutate(deflator = 245.1 / cpi)
+
+cbp_real <- cbp_clean %>%
+  left_join(cpi_u, by = "year") %>%
+  mutate(PAYANN_REAL = PAYANN * deflator)
+```
+
+---
+
+## Section 6: Merge CBP with Treatment Status
+
+Join treatment status onto the CBP panel. Suppressed zeros (CBP confidentiality
+masking) are replaced with NA so they do not bias the log-outcome regressions.
+
+```{r merge-treatment}
+analysis_counties <- mapping_data %>%
+  st_drop_geometry() %>%
+  filter(status %in% c("Treated", "Control")) %>%
+  select(GEOID, status, first_dc_year)
+
+cbp_analysis <- cbp_real %>%
+  left_join(analysis_counties, by = "GEOID") %>%
+  filter(!is.na(status)) %>%
+  mutate(
+    EMP         = if_else(EMP == 0,         NA_real_, EMP),
+    PAYANN      = if_else(PAYANN == 0,      NA_real_, PAYANN),
+    PAYANN_REAL = if_else(PAYANN_REAL == 0, NA_real_, PAYANN_REAL),
+    ESTAB       = if_else(ESTAB == 0,       NA_real_, ESTAB)
+  )
+```
+
+---
+
+## Section 7: Pull ACS Data (sector variables extended to all years)
+
+Pull ACS 5-year estimates for 2009–2023. Variables fall into two categories:
+**controls** (log population, log median income, educational attainment) used in
+the ACS-controlled DiD specifications, and **outcomes** (unemployment rate, poverty
+rate, labor force participation rate) used as dependent variables in their own DiD
+regressions. Poverty and labor force participation are kept out of `xformla` to
+avoid bad-control bias.
+
+Modified from the main document: the sector employment codes (DP03_0033-0045)
+are now pulled unconditionally for every year 2009-2023, not just <=2018, since
+those specific codes are stable across the ACS table redefinitions that affect
+`pct_bachelors`/`pct_hs_grad`.
+
+```{r pull-acs, cache=TRUE}
+acs_years <- 2009:2023
+
+pull_acs_year <- function(yr) {
+  # Sector employment codes (DP03_0033-0045) are stable across all years in this range,
+  # so they're pulled unconditionally rather than inside the <=2018 branch.
+  sector_vars <- c(
+    emp_agriculture   = "DP03_0033",
+    emp_construction  = "DP03_0034",
+    emp_manufacturing = "DP03_0035",
+    emp_wholesale     = "DP03_0036",
+    emp_retail        = "DP03_0037",
+    emp_transport     = "DP03_0038",
+    emp_information   = "DP03_0039",
+    emp_finance       = "DP03_0040",
+    emp_professional  = "DP03_0041",
+    emp_education     = "DP03_0042",
+    emp_arts          = "DP03_0043",
+    emp_other         = "DP03_0044",
+    emp_public        = "DP03_0045"
+  )
+
+  base_vars <- c(
+    median_income = "DP03_0062",
+    unemployment_rate = "DP03_0009P",
+    labor_force_participation = "DP03_0004P",
+    poverty_rate = "DP03_0119P",
+    pct_bachelors = if (yr <= 2018) "DP02_0061P" else "DP02_0062P",
+    pct_hs_grad   = if (yr <= 2018) "DP02_0067P" else "DP02_0068P",
+    total_pop = "B01003_001"
+  )
+
+  vars <- c(base_vars, sector_vars)
+
+  get_acs(geography = "county", variables = vars, year = yr, survey = "acs5") %>% mutate(year = yr)
+}
+
+acs_raw <- bind_rows(lapply(acs_years, pull_acs_year))
+
+acs_covariates <- acs_raw %>%
+  select(GEOID, year, variable, estimate) %>%
+  pivot_wider(names_from = variable, values_from = estimate) %>%
+  mutate(
+    log_pop = log(total_pop),
+    log_median_income = log(median_income)
+  )
+
+# Read County Health files.
+# Income variables become additional ACS-style outcomes.
+# Race variables become additional covariates, then are lagged below.
+migration_economy <- map_dfr(acs_years, function(yr) {
+  readxl::read_excel(
+    here("data", "economyData", "raw_migration", paste0("clh_", yr, "_county_2_0.xlsx")),
+    sheet = "Data",
+    col_types = "text"
+  ) %>%
+    transmute(
+      GEOID = COUNTYFIPS,
+      year = as.integer(YEAR),
+      ACS_MEDIAN_INC_F = as.numeric(ACS_MEDIAN_INC_F),
+      ACS_MEDIAN_INC_M = as.numeric(ACS_MEDIAN_INC_M),
+      ACS_PER_CAPITA_INC = as.numeric(ACS_PER_CAPITA_INC),
+      ACS_PCT_WHITE = as.numeric(ACS_PCT_WHITE),
+      ACS_PCT_BLACK = as.numeric(ACS_PCT_BLACK),
+      ACS_PCT_HISPANIC = as.numeric(ACS_PCT_HISPANIC),
+      ACS_PCT_ASIAN = as.numeric(ACS_PCT_ASIAN),
+      ACS_PCT_AIAN = as.numeric(ACS_PCT_AIAN)
+    )
+}) %>%
+  mutate(
+    log_median_inc_f = log(ACS_MEDIAN_INC_F),
+    log_median_inc_m = log(ACS_MEDIAN_INC_M),
+    log_per_capita_inc = log(ACS_PER_CAPITA_INC)
+  )
+
+cbp_analysis_acs <- cbp_analysis %>%
+  left_join(acs_covariates, by = c("GEOID", "year")) %>%
+  left_join(migration_economy, by = c("GEOID", "year")) %>%
+  filter(year >= 2009)
+
+# Build one-year lagged controls.
+# Outcome in year t is now paired with covariates from year t - 1.
+# Lag within county-sector panels so sector rows do not borrow values from one another.
+#
+# NOTE FOR SECTOR DEBUGGING: cbp_analysis_acs has one row per county-sector-YEAR
+# (from the CBP pull: All Industries + 4 NAICS sectors), but the ACS join above is
+# keyed only on (GEOID, year) — so every ACS column, including the sector employment
+# vars (emp_information, etc.), is fanned out identically across all naics_group rows
+# for a given county-year. This is harmless for the CBP-sourced DiD (Sections 9/11/12),
+# which filter on naics_group and so never see the duplication. It is NOT harmless for
+# the ACS-sourced sector DiD in Section 10 below, which has no naics_group filter to
+# protect it — that function handles the dedup itself (see the comment there).
+cbp_analysis_acs <- cbp_analysis_acs %>%
+  arrange(GEOID, naics_group, year) %>%
+  group_by(GEOID, naics_group) %>%
+  mutate(
+    lag_log_pop = lag(log_pop),
+    lag_log_median_income = lag(log_median_income),
+    lag_pct_bachelors = lag(pct_bachelors),
+    lag_pct_hs_grad = lag(pct_hs_grad),
+    lag_pct_white = lag(ACS_PCT_WHITE),
+    lag_pct_black = lag(ACS_PCT_BLACK),
+    lag_pct_hispanic = lag(ACS_PCT_HISPANIC),
+    lag_pct_asian = lag(ACS_PCT_ASIAN),
+    lag_pct_aian = lag(ACS_PCT_AIAN)
+  ) %>%
+  ungroup()
+```
+
+---
+
+## Section 8: ACS Sector Employment Outcome List
+
+```{r outcome-list-acs-sector}
+# ACS sector employment outcomes (DP03_0033-0045)
+outcomes_acs_sector <- list(
+  list(var = "emp_agriculture",   label = "Employment — Agriculture, Forestry, Fishing, Hunting, Mining"),
+  list(var = "emp_construction",  label = "Employment — Construction"),
+  list(var = "emp_manufacturing", label = "Employment — Manufacturing"),
+  list(var = "emp_wholesale",     label = "Employment — Wholesale Trade"),
+  list(var = "emp_retail",        label = "Employment — Retail Trade"),
+  list(var = "emp_transport",     label = "Employment — Transportation, Warehousing, Utilities"),
+  list(var = "emp_information",   label = "Employment — Information"),
+  list(var = "emp_finance",       label = "Employment — Finance, Insurance, Real Estate"),
+  list(var = "emp_professional",  label = "Employment — Professional, Scientific, Management, Admin"),
+  list(var = "emp_education",     label = "Employment — Educational, Health Care, Social Assistance"),
+  list(var = "emp_arts",          label = "Employment — Arts, Entertainment, Recreation, Food Services"),
+  list(var = "emp_other",         label = "Employment — Other Services"),
+  list(var = "emp_public",        label = "Employment — Public Administration")
+)
+```
+
+---
+
+## Section 10: DiD — ACS Sector Employment, Lagged ACS + Race Controls
+
+ACS-sourced sector employment DiD. Two fixes applied relative to earlier drafts:
+
+1. **GEOID/year deduplication.** `cbp_analysis_acs` has the ACS sector columns
+   fanned out identically across every `naics_group` row for a given county-year
+   (see note in Section 7). Without deduplicating, `att_gt()` was being fed 4-5
+   duplicate rows per true (county, year) observation — confirmed empirically via
+   `filter(year==2015, !is.na(emp_information))` returning 13288 rows across only
+   2748 distinct counties. Fixed via `distinct(GEOID, year, .keep_all = TRUE)`
+   immediately after the status/year filters, before any outcome or covariate
+   NA filtering.
+
+2. **Race covariate collinearity.** The 5 race-share covariates
+   (white/black/hispanic/asian/aian) sum to ~100% of county population, causing
+   exact multicollinearity. On the full, unbalanced panel used in Sections 11/12
+   this tends to stay numerically invertible (with inflated SEs); on this
+   function's balanced, deduplicated, per-(g,t) cells it was hitting literal
+   singularity — confirmed via repeated `"regression design matrix for
+   pre-treatment is singular"` warnings across nearly every (g,t) pair, plus hard
+   failures (`subscript out of bounds`) for emp_other and emp_public. Fixed by
+   dropping `lag_pct_aian` from `xformla`, making it the implicit reference
+   category. This makes the covariate set here one variable short of the
+   xformla used in Sections 11/12 — flagged in `covar_label` and the plot
+   subtitles accordingly.
+
+**Open issue, not yet resolved:** `att_gt(control_group = "nevertreated")` is
+producing the warning `"No never-treated group is available. The last treated
+cohort is being coerced as 'never-treated' units."` even though thousands of
+true never-treated (G=0) counties exist in `df`. A diagnostic block is included
+below (`cs$DIDparams$control_group` vs. the requested value) to make this
+checkable rather than assumed. This is suspected to be related to the singular-
+matrix issue above (a failed (g,t) cell may be corrupting `did`'s internal
+bookkeeping of valid never-treated comparators), but that has not been confirmed
+by re-running after the collinearity fix. Re-test this specifically once the
+covariate fix is in.
+
+```{r did-sector-acs-lagged-controls}
+make_sector_df_acs_balanced <- function(data, outcome_var, start_year = 2012, end_year = 2023) {
+  n_years <- length(start_year:end_year)
+
+  # ACS sector employment is already a column in cbp_analysis_acs (e.g. emp_information),
+  # not split by naics_group, so there is no naics_group filter here — one row per
+  # county-year already covers every sector simultaneously.
+  #
+  # IMPORTANT: cbp_analysis_acs has one row per county-sector-YEAR from the CBP pull
+  # (All Industries + 4 NAICS sectors), and the ACS join in Section 7 is keyed only on
+  # (GEOID, year), so every ACS column — including these sector employment vars — is
+  # fanned out identically across all naics_group rows for a given county-year. Without
+  # deduplicating here, att_gt() sees 4-5 duplicate rows per true (county, year)
+  # observation, which both inflates apparent sample size and breaks the one-row-per-
+  # unit-period assumption the balancing logic (panel_n, has_pre/has_post) depends on —
+  # this was confirmed empirically: filter(year==2015, !is.na(emp_information)) returned
+  # 13288 rows across only 2748 distinct counties. Deduplicating immediately, before any
+  # outcome/covariate filters, ensures everything downstream operates on the true panel.
+  df <- data %>%
+    filter(status == "Control" | (status == "Treated" & first_dc_year >= start_year & first_dc_year <= 2020)) %>%
+    filter(year >= start_year, year <= end_year) %>%
+    distinct(GEOID, year, .keep_all = TRUE) %>%
+    filter(!is.na(.data[[outcome_var]]), .data[[outcome_var]] > 0) %>%
+    filter(
+      !is.na(lag_log_pop),
+      !is.na(lag_log_median_income),
+      !is.na(lag_pct_bachelors),
+      !is.na(lag_pct_hs_grad),
+      !is.na(lag_pct_white),
+      !is.na(lag_pct_black),
+      !is.na(lag_pct_hispanic),
+      !is.na(lag_pct_asian),
+      !is.na(lag_pct_aian)
+    ) %>%
+    mutate(
+      county_id = as.integer(factor(GEOID)),
+      G = if_else(status == "Treated" & !is.na(first_dc_year), as.integer(first_dc_year) - 2008L, 0L),
+      year2 = year - 2008L,
+      outcome = log(.data[[outcome_var]])
+    ) %>%
+    group_by(county_id) %>%
+    mutate(panel_n = n_distinct(year2), unit_G = first(G)) %>%
+    ungroup() %>%
+    filter(panel_n == n_years) %>%
+    group_by(county_id, unit_G) %>%
+    mutate(has_pre = unit_G == 0 | any(year2 < unit_G), has_post = unit_G == 0 | any(year2 >= unit_G)) %>%
+    ungroup() %>%
+    filter(unit_G == 0 | (has_pre & has_post)) %>%
+    mutate(G = as.integer(unit_G)) %>%
+    select(-panel_n, -unit_G, -has_pre, -has_post)
+
+  # Drop very small treatment cohorts, same threshold as the CBP sector version.
+  cohort_counts <- df %>%
+    filter(G > 0) %>%
+    group_by(G) %>%
+    summarize(n_units = n_distinct(county_id), .groups = "drop")
+
+  dropped <- cohort_counts %>% filter(n_units < 3)
+  kept_cohorts <- cohort_counts %>% filter(n_units >= 3)
+
+  if (nrow(dropped) > 0) {
+    message("Dropping small cohorts for ", outcome_var, ": G = ", paste(dropped$G, "(n=", dropped$n_units, ")", collapse = ", "))
+  }
+
+  df <- df %>% filter(G == 0 | G %in% kept_cohorts$G)
+
+  cat("\n--- ACS sector diagnostics:", outcome_var, "---\n")
+  cat("Rows:", nrow(df), "\n")
+  cat("Counties:", n_distinct(df$county_id), "\n")
+  cat("Treated counties:", n_distinct(df$county_id[df$G > 0]), "\n")
+  cat("Control counties:", n_distinct(df$county_id[df$G == 0]), "\n")
+  cat("Treatment cohorts:", n_distinct(df$G[df$G > 0]), "\n")
+  print(table(df$G))
+
+  df
+}
+
+run_sector_did_acs_balanced <- function(data, outcome_var, outcome_label, control_group) {
+  df <- make_sector_df_acs_balanced(data = data, outcome_var = outcome_var)
+
+  n_treated <- n_distinct(df$county_id[df$G > 0])
+  n_control <- n_distinct(df$county_id[df$G == 0])
+  n_cohorts <- n_distinct(df$G[df$G > 0])
+
+  if (nrow(df) == 0 || n_treated < 3 || n_control < 10 || n_cohorts < 1) {
+    message("Skipping ", outcome_var, " (", control_group, "): not enough usable treated/control observations.")
+    return(NULL)
+  }
+
+  # Same fallback rule as the CBP sector version: full lagged ACS + race controls
+  # only when treated support is large enough, otherwise xformla = ~ 1.
+  #
+  # NOTE: lag_pct_aian is deliberately omitted here, unlike the xformla used in
+  # Sections 11/12. The 5 race-share covariates (white/black/hispanic/asian/aian)
+  # sum to ~100% of county population, so including all 5 makes the design matrix
+  # exactly rank-deficient. On the full, unbalanced panel used in 11/12 this
+  # tends to stay numerically invertible (with inflated SEs); on this function's
+  # balanced, deduplicated, per-(g,t) cells it was hitting literal singularity
+  # (confirmed: "regression design matrix for pre-treatment is singular" on every
+  # (g,t) pair). Dropping aian (typically the smallest share) makes it the
+  # implicit reference category — the other 4 coefficients are now interpreted
+  # relative to it — without changing what's being controlled for.
+  if (n_treated < 10 || n_cohorts < 3) {
+    message("Too few treated units/cohorts for full controls in ", outcome_var, "; using xformla = ~ 1.")
+    xformla <- ~ 1
+    covar_label <- "no covariates"
+  } else {
+    xformla <- ~ lag_log_pop + lag_log_median_income + lag_pct_bachelors + lag_pct_hs_grad + lag_pct_white + lag_pct_black + lag_pct_hispanic + lag_pct_asian
+    covar_label <- "lagged ACS + race controls (aian as reference)"
+  }
+
+  cs <- tryCatch(
+    att_gt(
+      yname = "outcome",
+      tname = "year2",
+      idname = "county_id",
+      gname = "G",
+      xformla = xformla,
+      control_group = control_group,
+      panel = FALSE,
+      bstrap = FALSE,
+      cband = FALSE,
+      clustervars = NULL,
+      data = df
+    ),
+    error = function(e) {
+      message("att_gt failed for ", outcome_var, " (", control_group, "): ", e$message)
+      NULL
+    }
+  )
+
+  if (is.null(cs)) {
+    message("Skipping aggregation and plot for ", outcome_var, " (", control_group, ").")
+    return(NULL)
+  }
+
+  # DIAGNOSTIC: att_gt() can silently fall back from "nevertreated" to a
+  # not-yet-treated-style comparison internally if the never-treated pool is too
+  # thin for a specific group-time pair. Surface what was actually requested vs.
+  # what the object reports, so this is verifiable rather than assumed.
+  cat("\n--- control_group check:", outcome_var, "---\n")
+  cat("Requested:", control_group, "\n")
+  cat("cs$DIDparams$control_group (as stored by att_gt):", cs$DIDparams$control_group, "\n")
+  if (!identical(cs$DIDparams$control_group, control_group)) {
+    warning("MISMATCH for ", outcome_var, ": requested '", control_group,
+            "' but att_gt object reports '", cs$DIDparams$control_group, "'.")
+  }
+  n_nevertreated_units <- n_distinct(df$county_id[df$G == 0])
+  cat("Never-treated (G=0) units available in df:", n_nevertreated_units, "\n")
+
+  att_overall <- aggte(cs, type = "simple")
+  att_dyn <- aggte(cs, type = "dynamic")
+
+  p_event <- ggdid(att_dyn) +
+    geom_vline(xintercept = -0.5, linetype = "dashed", color = "red") +
+    labs(
+      title = paste("Event Study —", outcome_label),
+      subtitle = paste("ACS-sourced sector employment | Balanced panel |", control_group, "control |", covar_label),
+      x = "Years Relative to First Data Center Opening",
+      y = paste0("ATT (log ", outcome_label, ")")
+    )
+
+  list(label = outcome_label, control_group = control_group, data = df, cs = cs, overall = att_overall, dynamic = att_dyn, p_event = p_event)
+}
+
+did_acs_sector_results_nt <- lapply(
+  outcomes_acs_sector,
+  function(o) run_sector_did_acs_balanced(data = cbp_analysis_acs, outcome_var = o$var, outcome_label = o$label, control_group = "nevertreated")
+)
+
+did_acs_sector_results_nyt <- lapply(
+  outcomes_acs_sector,
+  function(o) run_sector_did_acs_balanced(data = cbp_analysis_acs, outcome_var = o$var, outcome_label = o$label, control_group = "notyettreated")
+)
+
+sector_names <- vapply(outcomes_acs_sector, function(o) sub("^emp_", "", o$var), character(1))
+names(did_acs_sector_results_nt) <- sector_names
+names(did_acs_sector_results_nyt) <- sector_names
+
+# Plot all successful sector models.
+for (nm in names(did_acs_sector_results_nt)) {
+  if (!is.null(did_acs_sector_results_nt[[nm]])) print(did_acs_sector_results_nt[[nm]]$p_event)
+}
+
+for (nm in names(did_acs_sector_results_nyt)) {
+  if (!is.null(did_acs_sector_results_nyt[[nm]])) print(did_acs_sector_results_nyt[[nm]]$p_event)
+}
+```

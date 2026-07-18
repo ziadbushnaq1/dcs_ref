@@ -1,0 +1,1090 @@
+---
+title: "Data Centers & Local Economic Impact: Economic Analysis"
+author: ""
+date: "`r Sys.Date()`"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+# Load libraries for data wrangling, spatial joins, Census API pulls, and DiD estimation.
+# `did` provides att_gt/aggte/ggdid (Callaway & Sant'Anna staggered DiD).
+# `callr` (used in Sections 10 and 10b) is called via callr::r() and does not need
+# to be attached here.
+library(knitr)
+library(tidyverse)
+library(sf)
+library(tigris)
+library(tidycensus)
+library(censusapi)
+library(here)
+library(did)
+
+analysis_seed <- 12345
+set.seed(analysis_seed)
+
+options(tigris_use_cache = TRUE)
+Sys.setenv(CENSUS_KEY = Sys.getenv("CENSUS_KEY"))
+
+knitr::opts_chunk$set(
+  echo    = TRUE,
+  tidy    = TRUE,
+  tidy.opts = list(width.cutoff = 60),
+  comment   = NA,
+  fig.path  = "./figures/",
+  fig.align = "center",
+  fig.width  = 9,
+  fig.height = 5,
+  message = FALSE,
+  warning = FALSE
+)
+```
+
+## Section 1: County Boundaries
+
+Download lower-48 county polygons from Census TIGER/Line. These are needed for the
+spatial join that assigns each data center to a county.
+
+```{r county-boundaries}
+non_contiguous_fips <- c("02", "15", "60", "66", "69", "72", "78")
+
+lower_48_counties <- counties(cb = TRUE, year = 2023) %>%
+  filter(!STATEFP %in% non_contiguous_fips) %>%
+  st_transform(crs = 4326)
+```
+
+## Section 2: Load Data Centers
+
+Read the cleaned data center CSV and convert to a spatial object so each facility
+can be matched to the county it falls within.
+
+```{r load-datacenters}
+data_centers <- read.csv(here("data", "data_final", "economyDataFinal", "clean01EconDatacenter.csv")) %>%
+  filter(stage == "Operational") %>%
+  st_as_sf(coords = c("longitude", "latitude"), crs = 4326)
+```
+
+## Section 3: Treatment Assignment
+
+```{r treatment-assignment}
+data_centers_county <- st_join(data_centers, lower_48_counties, join = st_within)
+
+county_status <- data_centers_county %>%
+  st_drop_geometry() %>%
+  group_by(GEOID) %>%
+  summarize(
+    has_known_year      = any(!is.na(year_operational)),
+    earliest_known_year = if_else(has_known_year, min(year_operational, na.rm = TRUE), NA_real_),
+    .groups = "drop"
+  ) %>%
+  mutate(
+    status = case_when(
+      !has_known_year             ~ "Drop: Missing Years",
+      earliest_known_year < 2009  ~ "Drop: Pre-2007 Only",
+      earliest_known_year >= 2009 ~ "Treated"
+    ),
+    first_dc_year = case_when(
+      status == "Treated" ~ earliest_known_year,
+      TRUE                ~ NA_real_
+    )
+  )
+
+mapping_data <- lower_48_counties %>%
+  left_join(county_status %>% select(GEOID, status, first_dc_year), by = "GEOID") %>%
+  mutate(
+    status       = replace_na(status, "Control"),
+    first_dc_year = replace_na(first_dc_year, NA_real_)
+  )
+## SAVING MAP DATA for shiny app
+
+dc_counts <- data_centers_county %>%
+  sf::st_drop_geometry() %>%
+  filter(!is.na(GEOID)) %>%
+  count(GEOID, name = "dc_count")
+
+map_data_export <- mapping_data %>%
+  left_join(dc_counts, by = "GEOID") %>%
+  mutate(dc_count = tidyr::replace_na(dc_count, 0L)) %>%
+  select(GEOID, NAMELSAD, status, first_dc_year, dc_count, geometry) %>%
+  sf::st_transform(5070) %>%
+  sf::st_simplify(dTolerance = 500, preserveTopology = TRUE) %>%
+  sf::st_transform(4326)
+
+saveRDS(map_data_export, "../../ShinyApp/report/map_data.rds")
+
+dc_growth <- data_centers %>%
+  sf::st_drop_geometry() %>%
+  filter(!is.na(year_operational)) %>%
+  count(year = as.integer(year_operational), name = "n_opened") %>%
+  arrange(year) %>%
+  mutate(cumulative_dcs = cumsum(n_opened))
+
+saveRDS(dc_growth, "../../ShinyApp/report/dc_growth.rds")
+```
+
+## Section 4: Pull CBP Data
+#not used anymore (for the by sector)
+
+```{r pull-cbp, cache=TRUE}
+pull_cbp_year <- function(yr, naics = NULL) {
+  base_vars <- c("GEO_ID", "EMP", "PAYANN", "ESTAB")
+  api_args  <- list(
+    name     = "cbp",
+    vintage  = yr,
+    vars     = base_vars,
+    region   = "county:*",
+    regionin = "state:*"
+  )
+
+  if (!is.null(naics)) {
+    naics_var <- case_when(
+      yr >= 2017 ~ "NAICS2017",
+      yr >= 2012 ~ "NAICS2012",
+      yr >= 2008 ~ "NAICS2007",
+      TRUE       ~ "NAICS2002"
+    )
+    api_args[[naics_var]] <- naics
+  }
+
+  df <- tryCatch(
+    do.call(getCensus, api_args),
+    error = function(e) {
+      message("Failed: year=", yr, " naics=", naics, ": ", e$message)
+      return(NULL)
+    }
+  )
+  if (is.null(df)) return(NULL)
+
+  df$year        <- yr
+  df$naics_group <- if (is.null(naics)) "All Industries" else paste0("NAICS ", naics)
+  df
+}
+
+years <- 2003:2023
+
+# All-industry pull
+cbp_all <- bind_rows(lapply(years, pull_cbp_year, naics = NULL))
+
+# Sector-level pulls: Information (51), Construction (23),
+# Professional Services (54), Utilities (22)
+naics_sectors <- c("51", "23", "54", "22")
+cbp_sectors   <- bind_rows(
+  lapply(naics_sectors, function(naics) bind_rows(lapply(years, pull_cbp_year, naics = naics)))
+)
+
+cbp_raw <- bind_rows(cbp_all, cbp_sectors)
+```
+
+## Section 5: Clean CBP & Inflation Adjustment
+
+Construct county GEOIDs, deflate nominal payroll to 2017 constant dollars using
+BLS CPI-U annual averages, and replace suppressed zeros with NA.
+
+```{r clean-cbp}
+cbp_clean <- cbp_raw %>%
+  mutate(
+    GEOID  = paste0(state, county),
+    EMP    = as.numeric(EMP),
+    PAYANN = as.numeric(PAYANN),
+    ESTAB  = as.numeric(ESTAB)
+  )
+
+# CPI-U annual averages (base year 2017 = 245.1).
+# Source: BLS CPI-U, All Items, Annual Average, Series CUUR0000SA0.
+cpi_u <- tibble(
+  year = 2003:2023,
+  cpi  = c(
+    184.0, 188.9, 195.3, 201.6, 207.3, 215.3, 214.5, 218.1,
+    224.9, 229.6, 233.0, 236.7, 237.0, 240.0, 245.1, 251.1,
+    255.7, 258.8, 270.9, 292.7, 304.7
+  )
+) %>%
+  mutate(deflator = 245.1 / cpi)
+
+cbp_real <- cbp_clean %>%
+  left_join(cpi_u, by = "year") %>%
+  mutate(PAYANN_REAL = PAYANN * deflator)
+```
+
+---
+
+## Section 6: Merge CBP with Treatment Status
+
+Join treatment status onto the CBP panel. Suppressed zeros (CBP confidentiality
+masking) are replaced with NA so they do not bias the log-outcome regressions.
+
+```{r merge-treatment}
+analysis_counties <- mapping_data %>%
+  st_drop_geometry() %>%
+  filter(status %in% c("Treated", "Control")) %>%
+  select(GEOID, status, first_dc_year)
+
+cbp_analysis <- cbp_real %>%
+  left_join(analysis_counties, by = "GEOID") %>%
+  filter(!is.na(status)) %>%
+  mutate(
+    EMP         = if_else(EMP == 0,         NA_real_, EMP),
+    PAYANN      = if_else(PAYANN == 0,      NA_real_, PAYANN),
+    PAYANN_REAL = if_else(PAYANN_REAL == 0, NA_real_, PAYANN_REAL),
+    ESTAB       = if_else(ESTAB == 0,       NA_real_, ESTAB)
+  )
+```
+
+## Section 7: Pull ACS Data
+
+Pull ACS 5-year estimates for 2009–2023.
+
+```{r pull-acs, cache=TRUE}
+acs_years <- 2009:2023
+
+pull_acs_year <- function(yr) {
+  # Sector employment codes (DP03_0033-0045) are stable across all years in this range,
+  # so they're pulled unconditionally rather than inside the <=2018 branch.
+  sector_vars <- c(
+    emp_agriculture   = "DP03_0033",
+    emp_construction  = "DP03_0034",
+    emp_manufacturing = "DP03_0035",
+    emp_wholesale     = "DP03_0036",
+    emp_retail        = "DP03_0037",
+    emp_transport     = "DP03_0038",
+    emp_information   = "DP03_0039",
+    emp_finance       = "DP03_0040",
+    emp_professional  = "DP03_0041",
+    emp_education     = "DP03_0042",
+    emp_arts          = "DP03_0043",
+    emp_other         = "DP03_0044",
+    emp_public        = "DP03_0045"
+  )
+
+  base_vars <- c(
+    median_income = "DP03_0062",
+    unemployment_rate = "DP03_0009P",
+    labor_force_participation = "DP03_0004P",
+    poverty_rate = "DP03_0119P",
+    pct_bachelors = if (yr <= 2018) "DP02_0061P" else "DP02_0062P",
+    pct_hs_grad   = if (yr <= 2018) "DP02_0067P" else "DP02_0068P",
+    total_pop = "B01003_001"
+  )
+
+  vars <- c(base_vars, sector_vars)
+
+  get_acs(geography = "county", variables = vars, year = yr, survey = "acs5") %>% mutate(year = yr)
+}
+
+acs_raw <- bind_rows(lapply(acs_years, pull_acs_year))
+
+acs_covariates <- acs_raw %>%
+  select(GEOID, year, variable, estimate) %>%
+  pivot_wider(names_from = variable, values_from = estimate) %>%
+  mutate(
+    log_pop = log(total_pop),
+    log_median_income = log(median_income)
+  )
+
+# Read County Health files.
+# Income variables become additional ACS-style outcomes.
+# Race variables become additional covariates, then are lagged below.
+migration_economy <- map_dfr(acs_years, function(yr) {
+  readxl::read_excel(
+    here("data", "economyData", "raw_migration", paste0("clh_", yr, "_county_2_0.xlsx")),
+    sheet = "Data",
+    col_types = "text"
+  ) %>%
+    transmute(
+      GEOID = COUNTYFIPS,
+      year = as.integer(YEAR),
+      ACS_MEDIAN_INC_F = as.numeric(ACS_MEDIAN_INC_F),
+      ACS_MEDIAN_INC_M = as.numeric(ACS_MEDIAN_INC_M),
+      ACS_PER_CAPITA_INC = as.numeric(ACS_PER_CAPITA_INC),
+      ACS_PCT_WHITE = as.numeric(ACS_PCT_WHITE),
+      ACS_PCT_BLACK = as.numeric(ACS_PCT_BLACK),
+      ACS_PCT_HISPANIC = as.numeric(ACS_PCT_HISPANIC),
+      ACS_PCT_ASIAN = as.numeric(ACS_PCT_ASIAN),
+      ACS_PCT_AIAN = as.numeric(ACS_PCT_AIAN)
+    )
+}) %>%
+  mutate(
+    log_median_inc_f = log(ACS_MEDIAN_INC_F),
+    log_median_inc_m = log(ACS_MEDIAN_INC_M),
+    log_per_capita_inc = log(ACS_PER_CAPITA_INC)
+  )
+
+cbp_analysis_acs <- cbp_analysis %>%
+  left_join(acs_covariates, by = c("GEOID", "year")) %>%
+  left_join(migration_economy, by = c("GEOID", "year")) %>%
+  filter(year >= 2009)
+
+# Build one-year lagged controls.
+cbp_analysis_acs <- cbp_analysis_acs %>%
+  arrange(GEOID, naics_group, year) %>%
+  group_by(GEOID, naics_group) %>%
+  mutate(
+    lag_log_pop = lag(log_pop),
+    lag_log_median_income = lag(log_median_income),
+    lag_pct_bachelors = lag(pct_bachelors),
+    lag_pct_hs_grad = lag(pct_hs_grad),
+    lag_pct_white = lag(ACS_PCT_WHITE),
+    lag_pct_black = lag(ACS_PCT_BLACK),
+    lag_pct_hispanic = lag(ACS_PCT_HISPANIC),
+    lag_pct_asian = lag(ACS_PCT_ASIAN),
+    lag_pct_aian = lag(ACS_PCT_AIAN)
+  ) %>%
+  ungroup()
+```
+
+## Section 8: Define Outcome Lists
+
+```{r outcome-lists}
+# All-industry CBP outcomes
+outcomes_cbp <- list(
+  list(var = "EMP",         label = "Employment"),
+  list(var = "PAYANN_REAL", label = "Real Annual Payroll (2017 $)"),
+  list(var = "ESTAB",       label = "Establishments")
+)
+
+# ACS sector employment outcomes (DP03_0033-0045)
+outcomes_acs_sector <- list(
+  list(var = "emp_agriculture",   label = "Employment — Agriculture, Forestry, Fishing, Hunting, Mining"),
+  list(var = "emp_construction",  label = "Employment — Construction"),
+  list(var = "emp_manufacturing", label = "Employment — Manufacturing"),
+  list(var = "emp_wholesale",     label = "Employment — Wholesale Trade"),
+  list(var = "emp_retail",        label = "Employment — Retail Trade"),
+  list(var = "emp_transport",     label = "Employment — Transportation, Warehousing, Utilities"),
+  list(var = "emp_information",   label = "Employment — Information"),
+  list(var = "emp_finance",       label = "Employment — Finance, Insurance, Real Estate"),
+  list(var = "emp_professional",  label = "Employment — Professional, Scientific, Management, Admin"),
+  list(var = "emp_education",     label = "Employment — Educational, Health Care, Social Assistance"),
+  list(var = "emp_arts",          label = "Employment — Arts, Entertainment, Recreation, Food Services"),
+  list(var = "emp_other",         label = "Employment — Other Services"),
+  list(var = "emp_public",        label = "Employment — Public Administration")
+)
+
+# ACS outcomes. The rate outcomes (unemployment, LFP) are levels; the income and
+# population outcomes are already logged in Section 7, so no further log transform
+# is applied in the DiD (Section 12).
+outcomes_acs <- list(
+  list(var = "unemployment_rate", label = "Unemployment Rate"),
+  list(var = "labor_force_participation", label = "Labor Force Participation Rate"),
+  list(var = "log_median_income", label = "Log Median Household Income"),
+  list(var = "log_pop", label = "Log Population"),
+  list(var = "log_median_inc_f", label = "Log Median Income — Female"),
+  list(var = "log_median_inc_m", label = "Log Median Income — Male"),
+  list(var = "log_per_capita_inc", label = "Log Per Capita Income")
+)
+```
+
+## Section 9: DiD — All Industries, Never-Treated Control
+
+Baseline staggered DiD (Callaway & Sant'Anna) on all-industry CBP outcomes, using
+never-treated counties as the control group and no additional covariates. The
+regression window is 2009–2023, matching the ACS-controlled models so the
+specifications are comparable. Cohorts are defined by first data-center opening year
+(`G = first_dc_year - 2008`); never-treated counties get `G = 0`.
+
+```{r did-baseline}
+run_did <- function(outcome_var, outcome_label, naics_filter = "All Industries", data) {
+
+  df <- data %>%
+    filter(naics_group == naics_filter) %>%
+    filter(
+      status == "Control" |
+        (status == "Treated" &
+           first_dc_year >= 2009 &
+           first_dc_year <= 2023)
+    ) %>%
+    filter(year >= 2009, year <= 2023) %>%
+    filter(!is.na(.data[[outcome_var]]), .data[[outcome_var]] > 0) %>%
+    mutate(
+      county_id = as.integer(factor(GEOID)),
+      G = if_else(
+        status == "Treated" & !is.na(first_dc_year),
+        as.integer(first_dc_year) - 2008,
+        0L
+      ),
+      outcome = log(.data[[outcome_var]]),
+      year2 = year - 2008
+    )
+
+  cs <- att_gt(
+    yname = "outcome",
+    tname = "year2",
+    idname = "county_id",
+    gname = "G",
+    xformla = ~ 1,
+    control_group = "nevertreated",
+    clustervars = "county_id",
+    data = df
+  )
+
+  att_overall <- aggte(cs, type = "simple", na.rm = TRUE)
+  att_dyn <- aggte(cs, type = "dynamic", na.rm = TRUE)
+
+  p_event <- ggdid(att_dyn) +
+    geom_vline(xintercept = -0.5, linetype = "dashed", color = "red") +
+    labs(
+      title = paste("Event Study —", outcome_label),
+      subtitle = "2009–2023 cohorts | Never-treated control | No covariates",
+      x = "Years Relative to First Data Center Opening",
+      y = paste0("ATT (log ", outcome_label, ")")
+    )
+
+  list(
+    label = outcome_label,
+    cs = cs,
+    overall = att_overall,
+    dynamic = att_dyn,
+    p_event = p_event
+  )
+}
+
+set.seed(analysis_seed)
+
+did_results <- lapply(
+  outcomes_cbp,
+  function(o) run_did(
+    outcome_var = o$var,
+    outcome_label = o$label,
+    data = cbp_analysis
+  )
+)
+
+names(did_results) <- c("employment", "payroll", "establishments")
+
+did_results$employment$p_event
+did_results$payroll$p_event
+did_results$establishments$p_event
+
+summary(did_results$employment$overall)
+summary(did_results$payroll$overall)
+summary(did_results$establishments$overall)
+```
+
+## Section 10: DiD — ACS Sector Employment, No Covariates
+
+
+```{r did-sector-nocov}
+run_sector_did_acs <- function(outcome_var, outcome_label, control_group, data) {
+
+  df <- data %>%
+    filter(
+      status == "Control" |
+        (status == "Treated" & first_dc_year >= 2009 & first_dc_year <= 2023)
+    ) %>%
+    filter(year >= 2009, year <= 2023) %>%
+    # ACS sector vars are repeated across the CBP naics_group rows for a county-year.
+    # Keep one row per county-year. "All Industries" sorts first (Section 7 arrange),
+    # so its row is the one retained.
+    distinct(GEOID, year, .keep_all = TRUE) %>%
+    filter(!is.na(.data[[outcome_var]]), .data[[outcome_var]] > 0) %>%
+    group_by(GEOID) %>%
+    filter(n() == length(2009:2023)) %>%   # balanced panel; drops singletons that crash att_gt
+    ungroup() %>%
+    mutate(
+      county_id = as.integer(factor(GEOID)),
+      G = if_else(
+        status == "Treated" & !is.na(first_dc_year),
+        as.integer(first_dc_year) - 2008,
+        0L
+      ),
+      outcome = log(.data[[outcome_var]]),
+      year2   = year - 2008
+    )
+
+  cs <- att_gt(
+    yname = "outcome", tname = "year2", idname = "county_id", gname = "G",
+    xformla = ~ 1,
+    control_group = control_group,
+    clustervars = "county_id",
+    data = df
+    # base period left at default (varying) to match Sections 9/11/12
+  )
+
+  att_overall <- aggte(cs, type = "simple", na.rm = TRUE)
+  att_dyn     <- aggte(cs, type = "dynamic", na.rm = TRUE)
+
+  p_event <- ggdid(att_dyn) +
+    geom_vline(xintercept = -0.5, linetype = "dashed", color = "red") +
+    labs(
+      title = paste("Event Study —", outcome_label),
+      subtitle = paste("2009–2023 cohorts |", control_group, "control | No covariates"),
+      x = "Years Relative to First Data Center Opening",
+      y = paste0("ATT (log ", outcome_label, ")")
+    )
+
+  list(label = outcome_label, control_group = control_group,
+       cs = cs, overall = att_overall, dynamic = att_dyn, p_event = p_event)
+}
+
+# Child-process wrapper: attach packages inside the subprocess so it's self-sufficient.
+safe_sector <- function(outcome_var, outcome_label, control_group, data, seed = 12345) {
+  callr::r(
+    function(fn, outcome_var, outcome_label, control_group, data, seed) {
+      library(dplyr)
+      library(ggplot2)
+      library(did)
+      set.seed(seed)
+      fn(outcome_var, outcome_label, control_group, data)
+    },
+    args = list(run_sector_did_acs, outcome_var, outcome_label, control_group, data, seed),
+    error = "error"
+  )
+}
+
+did_acs_sector_results_nt <- Map(
+  function(o, i) safe_sector(o$var, o$label, "nevertreated", cbp_analysis_acs, seed = analysis_seed + i),
+  outcomes_acs_sector,
+  seq_along(outcomes_acs_sector)
+)
+
+did_acs_sector_results_nyt <- Map(
+  function(o, i) safe_sector(o$var, o$label, "notyettreated", cbp_analysis_acs, seed = analysis_seed + 100 + i),
+  outcomes_acs_sector,
+  seq_along(outcomes_acs_sector)
+)
+
+sector_names <- sub("^emp_", "", vapply(outcomes_acs_sector, `[[`, "", "var"))
+names(did_acs_sector_results_nt)  <- sector_names
+names(did_acs_sector_results_nyt) <- sector_names
+
+sapply(sector_names, function(s) {
+  r <- did_acs_sector_results_nt[[s]]
+  if (inherits(r, "error")) NA_integer_ else length(unique(r$cs$DIDparams$data$county_id))
+})
+
+
+#debugging 
+
+
+# It prints the stored $p_event, falling back to rebuilding parent-side from the
+# serialized $dynamic (aggte) object if the stored ggplot fails to print.
+print_sector_event <- function(res, control_label) {
+  if (inherits(res, "error")) {
+    message("Skipping ", control_label, " — sector errored in subprocess.")
+    return(invisible(NULL))
+  }
+  p <- tryCatch(
+    print(res$p_event),
+    error = function(e) {
+      rebuilt <- ggdid(res$dynamic) +
+        geom_vline(xintercept = -0.5, linetype = "dashed", color = "red") +
+        labs(
+          title = paste("Event Study —", res$label),
+          subtitle = paste("2009–2023 cohorts |", res$control_group, "control"),
+          x = "Years Relative to First Data Center Opening",
+          y = paste0("ATT (log ", res$label, ")")
+        )
+      print(rebuilt)
+    }
+  )
+  invisible(p)
+}
+
+# Never-treated event studies
+for (s in sector_names) {
+  print_sector_event(did_acs_sector_results_nt[[s]], "Never Treated")
+}
+
+# Not-yet-treated event studies
+for (s in sector_names) {
+  print_sector_event(did_acs_sector_results_nyt[[s]], "Not Yet Treated")
+}
+```
+
+
+## Section 10b: DiD — ACS Sector Employment, Lagged ACS + Race Controls
+
+Covariate-controlled copy of Section 10: the same per-sector, two-control-group DiD,
+but with the Section 11/12 lagged controls added to `xformla` (log population, log
+median income, bachelor's and HS-grad shares, and five race shares).
+
+```{r did-sector-cov}
+run_sector_did_acs_cov <- function(outcome_var, outcome_label, control_group, data,
+                                   min_cohort_size = 5) {
+
+  df <- data %>%
+    filter(
+      status == "Control" |
+        (status == "Treated" & first_dc_year >= 2009 & first_dc_year <= 2023)
+    ) %>%
+    filter(year >= 2009, year <= 2023) %>%
+    # Keep one row per county-year ("All Industries" sorts first; see Section 10).
+    distinct(GEOID, year, .keep_all = TRUE) %>%
+    filter(!is.na(.data[[outcome_var]]), .data[[outcome_var]] > 0) %>%
+    filter(
+      !is.na(lag_log_pop), !is.na(lag_log_median_income),
+      !is.na(lag_pct_bachelors), !is.na(lag_pct_hs_grad),
+      !is.na(lag_pct_white), !is.na(lag_pct_black),
+      !is.na(lag_pct_hispanic), !is.na(lag_pct_asian), !is.na(lag_pct_aian)
+    ) %>%
+    group_by(GEOID) %>%
+    filter(n() >= 2) %>%              # singleton guard: prevents the att_gt segfault
+    
+    # Note: why this filter?
+    #All these models use att_gt() to compare counties over time. To measure change over time, a county has to show up in at least two different years. If a county appears in only one year, att_gt() breaks. It crashed the whole R session instead of just giving an error message. So we have to remove those single-year counties before running the model.
+                                                                                   
+    ungroup() %>%
+    mutate(
+      G = if_else(
+        status == "Treated" & !is.na(first_dc_year),
+        as.integer(first_dc_year) - 2008,
+        0L
+      ),
+      outcome = log(.data[[outcome_var]]),
+      year2   = year - 2008
+    ) %>%
+    # Drop treated cohorts too small to estimate after covariate filtering.
+    # n_distinct(GEOID) counts counties (not county-years). Controls (G == 0) kept.
+    group_by(G) %>%
+    filter(G == 0 | n_distinct(GEOID) >= min_cohort_size) %>%
+    ungroup() %>%
+    # Assign county_id AFTER all row filtering so the factor levels have no gaps.
+    mutate(county_id = as.integer(factor(GEOID)))
+
+  cs <- att_gt(
+    yname = "outcome", tname = "year2", idname = "county_id", gname = "G",
+    xformla = ~ lag_log_pop + lag_log_median_income + lag_pct_bachelors +
+      lag_pct_hs_grad + lag_pct_white + lag_pct_black +
+      lag_pct_hispanic + lag_pct_asian + lag_pct_aian,
+    control_group = control_group,
+    clustervars = "county_id",
+    data = df
+  )
+
+  att_overall <- aggte(cs, type = "simple", na.rm = TRUE)
+  att_dyn     <- aggte(cs, type = "dynamic", na.rm = TRUE)
+
+  p_event <- ggdid(att_dyn) +
+    geom_vline(xintercept = -0.5, linetype = "dashed", color = "red") +
+    labs(
+      title = paste("ACS-Controlled Event Study —", outcome_label),
+      subtitle = paste("2009–2023 cohorts |", control_group,
+                       "control | Lagged ACS + race controls"),
+      x = "Years Relative to First Data Center Opening",
+      y = paste0("ATT (log ", outcome_label, ")")
+    )
+
+  list(label = outcome_label, control_group = control_group,
+       cs = cs, overall = att_overall, dynamic = att_dyn, p_event = p_event)
+}
+
+# Child-process wrapper (same pattern as Section 10).
+safe_sector_cov <- function(outcome_var, outcome_label, control_group, data, seed = 12345) {
+  callr::r(
+    function(fn, outcome_var, outcome_label, control_group, data, seed) {
+      library(dplyr)
+      library(ggplot2)
+      library(did)
+      set.seed(seed)
+      fn(outcome_var, outcome_label, control_group, data)
+    },
+    args = list(run_sector_did_acs_cov, outcome_var, outcome_label, control_group, data, seed),
+    error = "error"
+  )
+}
+
+did_acs_sector_cov_results_nt <- Map(
+  function(o, i) safe_sector_cov(o$var, o$label, "nevertreated", cbp_analysis_acs, seed = analysis_seed + 200 + i),
+  outcomes_acs_sector,
+  seq_along(outcomes_acs_sector)
+)
+
+did_acs_sector_cov_results_nyt <- Map(
+  function(o, i) safe_sector_cov(o$var, o$label, "notyettreated", cbp_analysis_acs, seed = analysis_seed + 300 + i),
+  outcomes_acs_sector,
+  seq_along(outcomes_acs_sector)
+)
+
+names(did_acs_sector_cov_results_nt)  <- sector_names
+names(did_acs_sector_cov_results_nyt) <- sector_names
+
+# Retained-county check. Expect lower counts than Section 10 (covariate NA filtering
+# + the 2009 lag drop + dropped small cohorts). NA = errored subprocess.
+sapply(sector_names, function(s) {
+  r <- did_acs_sector_cov_results_nt[[s]]
+  if (inherits(r, "error")) NA_integer_ else length(unique(r$cs$DIDparams$data$county_id))
+})
+
+for (s in sector_names) {
+  print_sector_event(did_acs_sector_cov_results_nt[[s]],  "Never Treated")
+}
+for (s in sector_names) {
+  print_sector_event(did_acs_sector_cov_results_nyt[[s]], "Not Yet Treated")
+}
+```
+
+
+
+## Section 11: DiD — All Industries, ACS Controls, Not-Yet-Treated Control
+
+```{r did-acs-notyettreated}
+run_did_acs_nyt <- function(outcome_var, outcome_label, data) {
+  df <- data %>%
+    filter(naics_group == "All Industries") %>%
+    filter(status == "Control" | (status == "Treated" & first_dc_year >= 2009 & first_dc_year <= 2023)) %>%
+    filter(!is.na(.data[[outcome_var]]), .data[[outcome_var]] > 0) %>%
+    filter(
+      !is.na(lag_log_pop), !is.na(lag_log_median_income), !is.na(lag_pct_bachelors), !is.na(lag_pct_hs_grad), !is.na(lag_pct_white), !is.na(lag_pct_black), !is.na(lag_pct_hispanic), !is.na(lag_pct_asian), !is.na(lag_pct_aian)) %>%
+    mutate(
+      county_id = as.integer(factor(GEOID)),
+      G = if_else(status == "Treated" & !is.na(first_dc_year), as.integer(first_dc_year) - 2008, 0L),
+      outcome = log(.data[[outcome_var]]),
+      year2 = year - 2008
+    ) #%>%
+    #group_by(G) %>%
+    #filter(G == 0 | n_distinct(GEOID) >= 10) %>%   # drop tiny treated cohorts; keep all controls
+    #ungroup() %>%
+    #mutate(county_id = as.integer(factor(GEOID))) 
+
+  cs <- att_gt(
+    yname = "outcome",
+    tname = "year2",
+    idname = "county_id",
+    gname = "G",
+    xformla = ~ lag_log_pop + lag_log_median_income + lag_pct_bachelors + lag_pct_hs_grad + lag_pct_white + lag_pct_black + lag_pct_hispanic + lag_pct_asian + lag_pct_aian,
+    control_group = "notyettreated",
+    clustervars = "county_id",
+    data = df
+  )
+
+  att_overall <- aggte(cs, type = "simple", na.rm = TRUE)
+  att_dyn <- aggte(cs, type = "dynamic", na.rm = TRUE)
+
+  p_event <- ggdid(att_dyn) +
+    geom_vline(xintercept = -0.5, linetype = "dashed", color = "red") +
+    coord_cartesian(ylim = c(-0.2, 0.25)) +
+    labs(
+      title = paste("ACS-Controlled Event Study —", outcome_label),
+      subtitle = "2009–2023 cohorts | Not-yet-treated control | Lagged ACS + race controls",
+      x = "Years Relative to First Data Center Opening",
+      y = paste0("ATT (log ", outcome_label, ")")
+    )
+
+  list(label = outcome_label, cs = cs, overall = att_overall, dynamic = att_dyn, p_event = p_event)
+}
+set.seed(analysis_seed + 300)
+
+did_results_acs_nyt <- lapply(outcomes_cbp, function(o) run_did_acs_nyt(outcome_var = o$var, outcome_label = o$label, data = cbp_analysis_acs))
+
+names(did_results_acs_nyt) <- c("employment", "payroll", "establishments")
+
+did_results_acs_nyt$employment$p_event
+did_results_acs_nyt$payroll$p_event
+did_results_acs_nyt$establishments$p_event
+```
+
+## Section 12: DiD — ACS Outcomes
+
+```{r did-acs-outcomes}
+run_did_acs_outcome <- function(outcome_var, outcome_label, control_group, data) {
+  df <- data %>%
+    filter(naics_group == "All Industries") %>%
+    filter(status == "Control" | (status == "Treated" & first_dc_year >= 2009 & first_dc_year <= 2023)) %>%
+    filter(!is.na(.data[[outcome_var]]), .data[[outcome_var]] > 0) %>%
+    filter(
+      !is.na(lag_log_pop), !is.na(lag_log_median_income), !is.na(lag_pct_bachelors), !is.na(lag_pct_hs_grad), !is.na(lag_pct_white), !is.na(lag_pct_black), !is.na(lag_pct_hispanic), !is.na(lag_pct_asian), !is.na(lag_pct_aian)) %>%
+    mutate(
+      county_id = as.integer(factor(GEOID)),
+      G = if_else(status == "Treated" & !is.na(first_dc_year), as.integer(first_dc_year) - 2008, 0L),
+      outcome = .data[[outcome_var]],
+      year2 = year - 2008
+    )
+
+  cs <- att_gt(
+    yname = "outcome",
+    tname = "year2",
+    idname = "county_id",
+    gname = "G",
+    xformla = ~ lag_log_pop + lag_log_median_income + lag_pct_bachelors + lag_pct_hs_grad + lag_pct_white + lag_pct_black + lag_pct_hispanic + lag_pct_asian + lag_pct_aian,
+    control_group = control_group,
+    clustervars = "county_id",
+    data = df
+  )
+
+  att_overall <- aggte(cs, type = "simple", na.rm = TRUE)
+  att_dyn <- aggte(cs, type = "dynamic", na.rm = TRUE)
+
+  p_event <- ggdid(att_dyn) +
+    geom_vline(xintercept = -0.5, linetype = "dashed", color = "red") +
+    labs(
+      title = paste("Event Study —", outcome_label),
+      subtitle = paste("2009–2023 cohorts |", control_group, "control | Lagged ACS + race controls"),
+      x = "Years Relative to First Data Center Opening",
+      y = paste0("ATT (", outcome_label, ")")
+    )
+
+  list(label = outcome_label, cs = cs, overall = att_overall, dynamic = att_dyn, p_event = p_event)
+}
+
+set.seed(analysis_seed + 400)
+
+did_results_acs_outcomes_nt <- lapply(
+  outcomes_acs,
+  function(o) run_did_acs_outcome(outcome_var = o$var, outcome_label = o$label, control_group = "nevertreated", data = cbp_analysis_acs)
+)
+
+names(did_results_acs_outcomes_nt) <- c("unemployment", "labor_force_participation", "log_income", "log_pop", "female_income", "male_income", "per_capita_income")
+
+set.seed(analysis_seed + 500)
+
+did_results_acs_outcomes_nyt <- lapply(
+  outcomes_acs,
+  function(o) run_did_acs_outcome(outcome_var = o$var, outcome_label = o$label, control_group = "notyettreated", data = cbp_analysis_acs)
+)
+
+names(did_results_acs_outcomes_nyt) <- c("unemployment", "labor_force_participation", "log_income", "log_pop", "female_income", "male_income", "per_capita_income")
+
+# Never-treated plots
+did_results_acs_outcomes_nt$unemployment$p_event
+did_results_acs_outcomes_nt$labor_force_participation$p_event
+did_results_acs_outcomes_nt$log_income$p_event
+did_results_acs_outcomes_nt$log_pop$p_event
+did_results_acs_outcomes_nt$female_income$p_event
+did_results_acs_outcomes_nt$male_income$p_event
+did_results_acs_outcomes_nt$per_capita_income$p_event
+
+# Not-yet-treated plots
+did_results_acs_outcomes_nyt$unemployment$p_event
+did_results_acs_outcomes_nyt$labor_force_participation$p_event
+did_results_acs_outcomes_nyt$log_income$p_event
+did_results_acs_outcomes_nyt$log_pop$p_event
+did_results_acs_outcomes_nyt$female_income$p_event
+did_results_acs_outcomes_nyt$male_income$p_event
+did_results_acs_outcomes_nyt$per_capita_income$p_event
+```
+
+
+## Section 13: Results Summary Tables
+
+
+```{r results-summary}
+extract_results <- function(result, outcome, control_group) {
+
+  ATT <- result$overall$overall.att
+  SE  <- result$overall$overall.se
+
+  p_value <- 2 * (1 - pnorm(abs(ATT / SE)))
+
+  tibble(
+    Outcome = outcome,
+    `Control Group` = control_group,
+    ATT = ATT,
+    SE = SE,
+    `95% CI Lower` = ATT - 1.96 * SE,
+    `95% CI Upper` = ATT + 1.96 * SE,
+    `p-value` = p_value
+  )
+}
+
+# -----------------------------
+# Table 1: CBP outcomes — Section 9 (never-treated, no covariates)
+# -----------------------------
+cbp_summary_nt <- bind_rows(
+  Map(
+    function(result, outcome_info) {
+      extract_results(result, outcome_info$label, "Never Treated")
+    },
+    did_results, outcomes_cbp
+  )
+)
+
+knitr::kable(cbp_summary_nt, digits = 3,
+  caption = "Table 1. Overall ATT Estimates for CBP Outcomes")
+
+# -----------------------------
+# Table 2: CBP outcomes with ACS controls — Section 11 (not-yet-treated)
+# -----------------------------
+cbp_summary_acs_nyt <- bind_rows(
+  Map(
+    function(result, outcome_info) {
+      extract_results(result, outcome_info$label, "Not Yet Treated")  # was "Not Yet Treated + ACS Controls"
+    },
+    did_results_acs_nyt, outcomes_cbp
+  )
+)
+
+knitr::kable(cbp_summary_acs_nyt, digits = 3,
+  caption = "Table 2. Overall ATT Estimates for CBP Outcomes with ACS Controls")
+
+# -----------------------------
+# Table 3: ACS outcomes — Section 12 (never- and not-yet-treated)
+# -----------------------------
+acs_summary_nt <- bind_rows(
+  Map(
+    function(result, outcome_info) extract_results(result, outcome_info$label, "Never Treated"),
+    did_results_acs_outcomes_nt, outcomes_acs
+  )
+)
+
+acs_summary_nyt <- bind_rows(
+  Map(
+    function(result, outcome_info) extract_results(result, outcome_info$label, "Not Yet Treated"),
+    did_results_acs_outcomes_nyt, outcomes_acs
+  )
+)
+
+acs_summary <- bind_rows(acs_summary_nt, acs_summary_nyt)
+
+knitr::kable(acs_summary, digits = 3,
+  caption = "Table 3. Overall ATT Estimates for ACS Outcomes")
+
+# Main export: CBP (ACS-controlled) + ACS outcomes.
+results_summary <- bind_rows(
+  cbp_summary_nt %>%                                    # Section 9 baseline (no covariates)
+    mutate(Specification = "No Covariates", .after = `Control Group`),
+  cbp_summary_acs_nyt %>%                               # Section 11
+    mutate(Specification = "Lagged ACS + Race Controls", .after = `Control Group`),
+  acs_summary %>%                                       # Section 12
+    mutate(Specification = "Lagged ACS + Race Controls", .after = `Control Group`)
+)
+
+saveRDS(results_summary, file = "../../ShinyApp/report/results_summary.rds")
+
+# -----------------------------
+# Tables 4 & 5: ACS sector employment outcomes — Sections 10 and 10b
+# Kept in their own object/export, tagged by Specification, for the Shiny
+# sector table. extract_sector guards callr error objects (returns NULL, which
+# bind_rows drops) so a partial failure yields a shorter table rather than an error.
+# -----------------------------
+extract_sector <- function(results_list, control_label, spec_label) {
+  bind_rows(Map(
+    function(res, o) {
+      if (inherits(res, "error")) return(NULL)
+      extract_results(res, o$label, control_label) %>%
+        mutate(Specification = spec_label, .after = `Control Group`)
+    },
+    results_list, outcomes_acs_sector
+  ))
+}
+
+# Table 4: no-covariate sector results (Section 10)
+sector_summary_nocov <- bind_rows(
+  extract_sector(did_acs_sector_results_nt,  "Never Treated",   "No Covariates"),
+  extract_sector(did_acs_sector_results_nyt, "Not Yet Treated", "No Covariates")
+)
+
+knitr::kable(sector_summary_nocov, digits = 3,
+  caption = "Table 4. Overall ATT — ACS Sector Employment (No Covariates)")
+
+# Table 5: covariate-controlled sector results (Section 10b)
+sector_summary_cov <- bind_rows(
+  extract_sector(did_acs_sector_cov_results_nt,  "Never Treated",   "Lagged ACS + Race Controls"),
+  extract_sector(did_acs_sector_cov_results_nyt, "Not Yet Treated", "Lagged ACS + Race Controls")
+)
+
+knitr::kable(sector_summary_cov, digits = 3,
+  caption = "Table 5. Overall ATT — ACS Sector Employment (Lagged ACS + Race Controls)")
+
+# Combined sector export: both specifications in one tidy table for Shiny.
+sector_summary <- bind_rows(sector_summary_nocov, sector_summary_cov)
+
+saveRDS(sector_summary, file = "../../ShinyApp/report/sector_summary.rds")
+```
+
+######################################
+##SECTION 14: 
+
+#Model summary 
+
+```{r}
+
+## Section 14: Export event-study plots for the Shiny app
+dir.create("../../ShinyApp/www/event_studies", recursive = TRUE, showWarnings = FALSE)
+
+es_index <- list()
+
+save_event <- function(res, control, spec, source) {
+  if (is.null(res) || inherits(res, "error")) return(invisible(NULL))
+  p <- tryCatch(res$p_event, error = function(e) NULL)
+  if (is.null(p))
+    p <- tryCatch(did::ggdid(res$dynamic), error = function(e) NULL)
+  if (is.null(p)) return(invisible(NULL))
+
+  outcome <- res$label
+  fname <- paste0("es_",
+                  gsub("[^A-Za-z0-9]+", "_", paste(source, outcome, control, spec)),
+                  ".png")
+  ggplot2::ggsave(file.path("../../ShinyApp/www/event_studies", fname),
+                  plot = p, width = 9, height = 5, dpi = 110, bg = "white")
+
+  es_index[[length(es_index) + 1]] <<- tibble::tibble(
+    Outcome = outcome, `Control Group` = control,
+    Specification = spec, Source = source, file = fname
+  )
+}
+
+for (r in did_results)                    save_event(r, "Never Treated",   "No Covariates",              "Main")
+for (r in did_results_acs_nyt)            save_event(r, "Not Yet Treated", "Lagged ACS + Race Controls", "Main")
+for (r in did_results_acs_outcomes_nt)    save_event(r, "Never Treated",   "Lagged ACS + Race Controls", "Main")
+for (r in did_results_acs_outcomes_nyt)   save_event(r, "Not Yet Treated", "Lagged ACS + Race Controls", "Main")
+for (r in did_acs_sector_results_nt)      save_event(r, "Never Treated",   "No Covariates",              "Sector")
+for (r in did_acs_sector_results_nyt)     save_event(r, "Not Yet Treated", "No Covariates",              "Sector")
+for (r in did_acs_sector_cov_results_nt)  save_event(r, "Never Treated",   "Lagged ACS + Race Controls", "Sector")
+for (r in did_acs_sector_cov_results_nyt) save_event(r, "Not Yet Treated", "Lagged ACS + Race Controls", "Sector")
+
+saveRDS(dplyr::bind_rows(es_index), "../../ShinyApp/report/event_study_index.rds")
+
+#####################################
+
+library(dplyr)
+library(tidyr)
+library(ggplot2)
+
+sumdat_src <- cbp_analysis_acs
+if (inherits(sumdat_src, "sf")) sumdat_src <- sf::st_drop_geometry(sumdat_src)
+
+sumdat1 <- sumdat_src %>%
+  filter(naics_group == "All Industries") %>%
+  transmute(
+    status, year,
+    Employment                    = EMP,
+    `Real Payroll (2017$)`        = PAYANN_REAL,
+    Establishments                = ESTAB,
+    `Unemployment Rate`           = unemployment_rate,
+    `Labor Force Part. (%)`       = labor_force_participation,
+    `Median HH Income`            = median_income,
+    Population                    = total_pop,
+    `% Bachelor's+`               = pct_bachelors,
+    `% HS Grad+`                  = pct_hs_grad,
+    `Median Income (Female)`      = ACS_MEDIAN_INC_F,
+    `Median Income (Male)`        = ACS_MEDIAN_INC_M,
+    `Per Capita Income`           = ACS_PER_CAPITA_INC,
+    `% White`                     = ACS_PCT_WHITE,
+    `% Black`                     = ACS_PCT_BLACK,
+    `% Hispanic`                  = ACS_PCT_HISPANIC,
+    `% Asian`                     = ACS_PCT_ASIAN,
+    `% AIAN`                      = ACS_PCT_AIAN,
+    `Emp (Agriculture/Mining)`    = emp_agriculture,
+    `Emp (Construction)`          = emp_construction,
+    `Emp (Manufacturing)`         = emp_manufacturing,
+    `Emp (Wholesale Trade)`       = emp_wholesale,
+    `Emp (Retail Trade)`          = emp_retail,
+    `Emp (Transport/Utilities)`   = emp_transport,
+    `Emp (Information)`           = emp_information,
+    `Emp (Finance/Real Estate)`   = emp_finance,
+    `Emp (Professional/Admin)`    = emp_professional,
+    `Emp (Education/Health)`      = emp_education,
+    `Emp (Arts/Food Services)`    = emp_arts,
+    `Emp (Other Services)`        = emp_other,
+    `Emp (Public Administration)` = emp_public
+  )
+
+saveRDS(sumdat1, "../../ShinyApp/report/economy_summary_data.rds")
+
+summary_tbl <- sumdat1 %>%
+  select(-status, -year) %>%
+  pivot_longer(everything(), names_to = "Variable", values_to = "value") %>%
+  filter(!is.na(value)) %>%
+  group_by(Variable) %>%
+  summarise(
+    N = n(), Mean = mean(value), SD = sd(value),
+    Min = min(value), Median = median(value), Max = max(value),
+    .groups = "drop"
+  ) %>%
+  mutate(across(where(is.numeric), ~ round(.x, 3)))
+
+# taller table now
+tbl_plot <- gridExtra::tableGrob(summary_tbl, rows = NULL)
+ggsave("../../ShinyApp/www/economy_summary_table.png",
+       plot = tbl_plot, width = 9,
+       height = 0.28 * nrow(summary_tbl) + 1, dpi = 150, bg = "white")
+```
+
