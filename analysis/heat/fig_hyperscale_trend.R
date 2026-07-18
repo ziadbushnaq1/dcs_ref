@@ -2,19 +2,11 @@
 library(tidyverse); library(here); library(duckdb); library(patchwork)
 options(bitmapType = "cairo")
 
-HS <- c(411,412,648,664,2949,2950,2998,3012,3051,3052)
-f  <- here("data","processed","landsat_all146","landsat_all146_obs30m_l89.csv")
+source(here("analysis","heat","load_hyperscale_panel.R")); d <- load_hyperscale_panel()
 
-con <- dbConnect(duckdb())
-trend <- dbGetQuery(con, glue::glue("
-  SELECT export_id, longitude, latitude, year, month, LST_Celsius
-  FROM read_csv('{f}', ignore_errors=true)
-  WHERE export_id IN ({paste(HS, collapse=',')}) AND LST_Celsius IS NOT NULL"))
-dbDisconnect(con)
+trend <- d$pixel_data
 
-dc_xy <- read_csv(here("data","data_final","isolation_sets","landsat_all.csv"),
-                  show_col_types = FALSE) %>%
-  filter(export_id %in% HS) %>% select(export_id, dc_x = projected_x, dc_y = projected_y)
+dc_xy <- d$dc_points
 
 xy <- sf::sf_project(sf::st_crs(4326), sf::st_crs(5070),
                      as.matrix(trend[, c("longitude","latitude")]))

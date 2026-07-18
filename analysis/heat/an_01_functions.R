@@ -65,7 +65,9 @@ assign_treatment_zones <- function(pixel_df, dc_points,
   dc_metric <- dc_points %>% 
     st_transform(5070) %>% 
     # counties with the same name in different states could be problematic here, need to change cl_00 to keep state FIPS code
-    select(export_id, year_operational, any_of(c("power_builtout", "NAMELSAD")))
+    select(export_id, year_operational,
+           any_of(c("power_builtout","NAMELSAD","GEOID","campus_id",
+                    "seam_cohort","source_set")))
   
   # Assign pixel_id on the plain data frame, BEFORE st_as_sf() consumes
   # longitude/latitude into a geometry column. Grouping on
@@ -162,12 +164,15 @@ filter_elevation_controls <- function(classified_pixels, threshold_m = 50) {
 # ==============================================================================
 assign_treatment_intensity <- function(pixels_classified, master_dcs_sf,
                                        treat_radius_m = 600) {
-  dcs <- master_dcs_sf %>%
+  master_proj <- master_dcs_sf %>%
     st_transform(5070) %>%
-    filter(!is.na(year_operational)) %>%
     mutate(mx = st_coordinates(.)[,1], my = st_coordinates(.)[,2]) %>%
-    st_drop_geometry() %>%
-    select(master_id = export_id, master_year_op = year_operational, mx, my)
+    st_drop_geometry()
+  
+  dcs <- master_proj %>% filter(!is.na(year_operational)) %>%
+    select(master_year_op = year_operational, mx, my)          # known-year (unchanged role)
+  dcs_unknown <- master_proj %>% filter(is.na(year_operational)) %>%
+    select(mx, my)                                              # NEW
   
   # Unique physical pixels (one row each, not per observation)
   px <- pixels_classified %>%
@@ -199,11 +204,24 @@ assign_treatment_intensity <- function(pixels_classified, master_dcs_sf,
       .groups = "drop"
     )
   
+  # --- unknown-year facilities: permanent contamination flag (no dose) ---
+  if (nrow(dcs_unknown) > 0) {
+    nnu <- RANN::nn2(as.matrix(dcs_unknown[, c("mx","my")]),
+                     as.matrix(px[, c("pixel_x","pixel_y")]),
+                     k = min(15, nrow(dcs_unknown)),
+                     searchtype = "radius", radius = treat_radius_m)
+    px$near_unknown_dc <- rowSums(nnu$nn.idx > 0) > 0
+  } else {
+    px$near_unknown_dc <- FALSE
+  }
+  
   # Compute n_treating on the DISTINCT pixel-year grid, then join back.
   # map2_int over the full panel is O(rows); this is O(pixels x years).
   grid <- pixels_classified %>%
     distinct(longitude, latitude, year) %>%
     left_join(coverage, by = c("longitude", "latitude")) %>%
+    left_join(px %>% select(longitude, latitude, near_unknown_dc),
+              by = c("longitude", "latitude")) %>%
     mutate(n_treating = map2_int(
       covering_years, year,
       ~ { if (is.null(.x) || length(.x) == 0) 0L else sum(.x <= .y) })) %>%
@@ -296,7 +314,10 @@ run_spatial_model <- function(panel_data, fe_spec = "pixel_id + year",
   }
   
   form_str <- paste0("relative_lst ~ ", treat_term, covariate_term, " | ", fe_spec)
-  feols(as.formula(form_str), data = panel_data, cluster = ~as.formula(paste0("~", cluster_var)))
+  if (!cluster_var %in% names(panel_data))
+    stop("cluster_var '", cluster_var, "' not in panel — did campus_id survive the joins?")
+  feols(as.formula(form_str), data = panel_data,
+        cluster = as.formula(paste0("~", cluster_var)))
 }
 
 run_pixel_analysis <- function(raw_csv_data, dc_points, 
@@ -306,7 +327,7 @@ run_pixel_analysis <- function(raw_csv_data, dc_points,
                                filter_elev = TRUE, elev_threshold = 50,
                                is_event_study = FALSE, ref_year = -1,
                                use_nlcd_control = FALSE, use_intensity = FALSE, master_dcs = NULL,
-                               sensor = "landsat", drop_conflicts = FALSE, use_construction = FALSE) {
+                               sensor = "landsat", drop_conflicts = FALSE, use_construction = FALSE, cluster_var = "export_id") {
   
   if (use_power_builtout) {
     dc_points <- dc_points %>% filter(!is.na(power_builtout))
@@ -371,7 +392,8 @@ run_pixel_analysis <- function(raw_csv_data, dc_points,
   
   model_results <- run_spatial_model(
     panel_data, fe_spec = fe_spec, is_event_study = is_event_study, ref_year = ref_year, 
-    use_nlcd_control = use_nlcd_control, sensor = sensor, use_construction = use_construction
+    use_nlcd_control = use_nlcd_control, sensor = sensor, use_construction = use_construction,
+    cluster_var = cluster_var
   )
   
   return(list(

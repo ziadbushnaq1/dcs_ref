@@ -2,7 +2,7 @@
 library(tidyverse); library(here); library(duckdb)
 
 f1 <- here("data","processed","landsat_all146","landsat_all146_obs30m_unified.csv")
-HS <- c(411,412,648,664,2949,2950,2998,3012,3051,3052)   # extend with pre2014 IDs
+HS <- read_csv(here("data","data_final","hyperscale_roster.csv"), show_col_types=FALSE) %>% filter(has_event_time) %>% pull(export_id)
 
 con <- dbConnect(duckdb()); dbExecute(con, "SET memory_limit='24GB'")
 

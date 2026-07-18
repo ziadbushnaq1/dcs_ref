@@ -34,6 +34,10 @@ params <- expand.grid(
   mod_fe = c("pixel_id + year", "pixel_id + year^export_id"),
   stringsAsFactors = FALSE
 )
+params$cluster_var <- "export_id"
+params <- bind_rows(params,
+                    params %>% filter(ring_idx == 1, mod_fe == "pixel_id + year") %>%   # 300-600 primary
+                      mutate(cluster_var = "campus_id"))
 
 out <- list()
 

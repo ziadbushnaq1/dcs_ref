@@ -1,17 +1,11 @@
-# check_hyperscale_rings.R
-library(tidyverse)
-library(sf)
-library(leaflet)
-library(here)
+library(tidyverse); library(sf); library(leaflet); library(here)
 
-# 1. Define your 10 Hyperscale IDs
-HS_IDs <- c(411, 412, 648, 664, 2949, 2950, 2998, 3012, 3051, 3052)
+roster <- read_csv(here("data","data_final","hyperscale_roster.csv"),
+                   show_col_types = FALSE) %>%
+  filter(has_event_time)
 
-# 2. Load the master operational facilities and filter ONLY for hyperscale
-hyperscale_facilities <- read_csv(here("data", "data_final", "clean01_datacenter.csv"), 
-                                  show_col_types = FALSE) %>%
-  filter(stage == "Operational", export_id %in% HS_IDs) %>%
-  st_as_sf(coords = c("projected_x", "projected_y"), crs = 5070)
+hyperscale_facilities <- roster %>%
+  st_as_sf(coords = c("projected_x","projected_y"), crs = 5070)
 
 # 3. Create the spatial buffers for all 10 facilities simultaneously
 ring_300  <- st_buffer(hyperscale_facilities, dist = 300)
@@ -44,9 +38,12 @@ leaflet() %>%
               fillOpacity = 0.2, group = "300m (Core)") %>%
   
   # Add markers with popups to identify each facility
-  addCircleMarkers(data = facilities_wgs, color = "white", 
+  addCircleMarkers(data = facilities_wgs, color = "white",
                    radius = 4, fillOpacity = 1,
-                   popup = ~paste("Hyperscale ID:", export_id)) %>%
+                   popup = ~paste0("ID: ", export_id,
+                                   "<br>Campus: ", campus_id,
+                                   "<br>Opened: ", year_operational,
+                                   "<br>Source: ", source_set)) %>%
   
   # Add a toggle menu to turn specific rings on and off
   addLayersControl(overlayGroups = c("300m (Core)", "600m (Halo)", 

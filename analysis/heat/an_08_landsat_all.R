@@ -41,7 +41,8 @@ master_ops <- read_csv(here("data","data_final","clean01_datacenter.csv"),
   filter(stage == "Operational") %>%
   st_as_sf(coords = c("projected_x","projected_y"), crs = 5070)
 
-HS <- c(411,412,648,664,2949,2950,2998,3012,3051,3052)
+HS <- read_csv(here("data","data_final","hyperscale_roster.csv"),
+               show_col_types = FALSE) %>% pull(export_id)
 
 # ── Subgroups: full sample + the heterogeneity split ────────────────────
 GROUPS <- list(
