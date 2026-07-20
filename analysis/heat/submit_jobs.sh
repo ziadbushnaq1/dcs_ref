@@ -119,6 +119,21 @@ case $JOB_TYPE in
             Rscript analysis/heat/an_08_landsat_hyperscale.R"
         ;;
         
+    an_08_se)
+        sbatch \
+            --job-name=an08_seas_hyper30 \
+            --account=$ACCOUNT \
+            --partition=$PARTITION \
+            --nodes=1 \
+            --ntasks=1 \
+            --cpus-per-task=8 \
+            --mem=196G \
+            --time=6:00:00 \
+            --output=${BASE_DIR}/an08_seas_%j.log \
+            --wrap="$SETUP_CMDS
+            Rscript analysis/heat/an_08_seasonal.R"
+        ;;    
+    
     an_08_all)
         sbatch \
             --job-name=an08_all30 \
@@ -257,6 +272,14 @@ case $JOB_TYPE in
             --output=${BASE_DIR}/bootloo_%j.log \
             --wrap="$SETUP_CMDS
             Rscript analysis/heat/check_bootstrap_loo.R"
+        ;;
+        
+    verify_intensity)
+        sbatch --job-name=verify_int --account=$ACCOUNT --partition=$PARTITION \
+            --ntasks=1 --cpus-per-task=4 --mem=64G --time=1:00:00 \
+            --output=${BASE_DIR}/verify_int_%j.log \
+            --wrap="$SETUP_CMDS
+            Rscript analysis/heat/verify_intensity_patch.R"
         ;;
         
     *)
