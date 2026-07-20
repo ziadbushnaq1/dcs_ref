@@ -13,6 +13,9 @@ d <- load_hyperscale_panel()
 # Headline cell config; construction window (-3..-1) excluded from both sides
 cls <- assign_treatment_zones(d$pixel_data, d$dc_points,
                               0, 600, 1000, 1500, sensor = "landsat")
+cls <- flag_contaminated_controls(cls, d$master_ops, radius_m = 600)
+cls <- cls %>% filter(!(status == "Control" &
+                          (!is.na(contam_first_year) | contam_near_undated)))
 pan <- build_did_panel(cls, sensor = "landsat_monthly")
 rm(cls); gc()
 
