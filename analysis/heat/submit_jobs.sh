@@ -258,6 +258,14 @@ case $JOB_TYPE in
             --wrap="$SETUP_CMDS
             Rscript analysis/heat/fig_hyperscale_trend.R"
         ;;
+        
+    audit_control)
+        sbatch --job-name=audit_rings --account=$ACCOUNT --partition=$PARTITION \
+            --nodes=1 --ntasks=1 --cpus-per-task=4 --mem=96G --time=2:00:00 \
+            --output=${BASE_DIR}/audit_rings_%j.log \
+            --wrap="$SETUP_CMDS
+            Rscript analysis/heat/audit_control_rings.R"
+        ;;
 
     contam_eval)
         sbatch \
