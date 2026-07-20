@@ -221,10 +221,11 @@ assign_treatment_intensity <- function(pixels_classified, master_dcs_sf,
 }
 
 # ==============================================================================
-# flag_contaminated_controls: pixel-level boolean for proximity to any DC in
-# contam_dcs_sf, dated or undated (a static drop needs no timing split).
-# Exists so the control-drop roster can differ from the dose roster that
-# assign_treatment_intensity uses for n_treating.
+# flag_contaminated_controls: per pixel, (a) earliest year_operational among
+# DATED roster DCs within radius (contam_first_year, NA if none) and (b) a
+# boolean for UNDATED roster DCs (contam_near_undated). Supports the static
+# and dynamic control-drop rules in run_pixel_analysis. Exists so the
+# control-drop roster can differ from the dose roster.
 # ==============================================================================
 flag_contaminated_controls <- function(pixels_classified, contam_dcs_sf,
                                        radius_m = 600) {
@@ -233,17 +234,42 @@ flag_contaminated_controls <- function(pixels_classified, contam_dcs_sf,
     mutate(mx = st_coordinates(.)[,1], my = st_coordinates(.)[,2]) %>%
     st_drop_geometry()
   
+  dated   <- contam_proj %>% filter(!is.na(year_operational))
+  undated <- contam_proj %>% filter(is.na(year_operational))
+  
   px <- pixels_classified %>%
     distinct(longitude, latitude, pixel_x, pixel_y)
   
-  nn <- RANN::nn2(as.matrix(contam_proj[, c("mx","my")]),
-                  as.matrix(px[, c("pixel_x","pixel_y")]),
-                  k = min(15, nrow(contam_proj)),
-                  searchtype = "radius", radius = radius_m)
-  px$near_contam_dc <- rowSums(nn$nn.idx > 0) > 0
+  # -- dated: earliest opening year among neighbors within radius --
+  px$contam_first_year <- NA_real_
+  if (nrow(dated) > 0) {
+    nn <- RANN::nn2(as.matrix(dated[, c("mx","my")]),
+                    as.matrix(px[, c("pixel_x","pixel_y")]),
+                    k = min(15, nrow(dated)),
+                    searchtype = "radius", radius = radius_m)
+    hits <- tibble(px_row = rep(seq_len(nrow(px)), each = ncol(nn$nn.idx)),
+                   dc_idx = as.vector(t(nn$nn.idx))) %>%
+      filter(dc_idx > 0) %>%
+      group_by(px_row) %>%
+      summarise(first_yr = min(dated$year_operational[dc_idx]),
+                .groups = "drop")
+    px$contam_first_year[hits$px_row] <- hits$first_yr
+  }
+  
+  # -- undated: static proximity boolean (no date -> no timing possible) --
+  if (nrow(undated) > 0) {
+    nnu <- RANN::nn2(as.matrix(undated[, c("mx","my")]),
+                     as.matrix(px[, c("pixel_x","pixel_y")]),
+                     k = min(15, nrow(undated)),
+                     searchtype = "radius", radius = radius_m)
+    px$contam_near_undated <- rowSums(nnu$nn.idx > 0) > 0
+  } else {
+    px$contam_near_undated <- FALSE
+  }
   
   pixels_classified %>%
-    left_join(px %>% select(longitude, latitude, near_contam_dc),
+    left_join(px %>% select(longitude, latitude,
+                            contam_first_year, contam_near_undated),
               by = c("longitude", "latitude"))
 }
 
@@ -330,10 +356,18 @@ run_spatial_model <- function(panel_data, fe_spec = "pixel_id + year",
   }
   
   form_str <- paste0("relative_lst ~ ", treat_term, covariate_term, " | ", fe_spec)
-  if (!cluster_var %in% names(panel_data))
-    stop("cluster_var '", cluster_var, "' not in panel — did campus_id survive the joins?")
-  feols(as.formula(form_str), data = panel_data,
-        cluster = as.formula(paste0("~", cluster_var)))
+  if (identical(cluster_var, "none")) {
+    # Heteroskedasticity-robust only. WARNING: assumes independence across
+    # pixel-months; with dense spatial panels this overstates precision by
+    # orders of magnitude. Present only alongside clustered/bootstrap
+    # inference, never as the primary p-value.
+    feols(as.formula(form_str), data = panel_data, vcov = "hetero")
+  } else {
+    if (!cluster_var %in% names(panel_data))
+      stop("cluster_var '", cluster_var, "' not in panel — did campus_id survive the joins?")
+    feols(as.formula(form_str), data = panel_data,
+          cluster = as.formula(paste0("~", cluster_var)))
+  }
 }
 
 run_pixel_analysis <- function(raw_csv_data, dc_points, 
@@ -345,7 +379,8 @@ run_pixel_analysis <- function(raw_csv_data, dc_points,
                                use_nlcd_control = FALSE, use_intensity = FALSE, master_dcs = NULL,
                                sensor = "landsat", drop_conflicts = FALSE, use_construction = FALSE, 
                                cluster_var = "export_id", drop_unknown_controls = TRUE, 
-                               contamination_master = NULL) {
+                               contamination_master = NULL, contam_timing = "static", 
+                               contam_buffer_years = 0) {
   
   if (use_power_builtout) {
     dc_points <- dc_points %>% filter(!is.na(power_builtout))
@@ -377,8 +412,31 @@ run_pixel_analysis <- function(raw_csv_data, dc_points,
     } else {
       classified_data <- flag_contaminated_controls(
         classified_data, contamination_master, radius_m = 600)
-      classified_data <- classified_data %>%
-        filter(!(status == "Control" & near_contam_dc))
+      if (contam_timing == "static") {
+        # Ever near any roster DC (dated or undated) -> drop all years.
+        # Ignores dates entirely: the maximally conservative bound.
+        classified_data <- classified_data %>%
+          filter(!(status == "Control" &
+                     (!is.na(contam_first_year) | contam_near_undated)))
+      } else if (contam_timing == "static_dated") {
+        # NOT RECOMMENDED. Drops all years near dated DCs while keeping
+        # controls near undated ones -- uses the date's existence but not
+        # its value. Retained only for backward comparability with the
+        # legacy drop_unknown_controls = FALSE results; prefer "dynamic"
+        # whenever dates are to be used.
+        classified_data <- classified_data %>%
+          filter(!(status == "Control" & !is.na(contam_first_year)))
+      } else if (contam_timing == "dynamic") {
+        # Dates used properly: control pixel-years drop from (first dated
+        # opening - buffer) onward; pre-opening years remain valid controls.
+        # Undated DCs stay a static drop -- no date, no timing rule.
+        # buffer = 3 aligns the drop with the construction window.
+        classified_data <- classified_data %>%
+          filter(!(status == "Control" &
+                     (contam_near_undated |
+                        (!is.na(contam_first_year) &
+                           year >= contam_first_year - contam_buffer_years))))
+      } else stop("unknown contam_timing: ", contam_timing)
     }
   }
   

@@ -149,6 +149,78 @@ case $JOB_TYPE in
             Rscript analysis/heat/an_08_landsat_all.R"
         ;;
         
+    hs_core)
+        sbatch \
+            --job-name=hs_core \
+            --account=$ACCOUNT --partition=$PARTITION \
+            --nodes=1 --ntasks=1 --cpus-per-task=8 --mem=128G --time=12:00:00 \
+            --output=${BASE_DIR}/hs_core_%j.log \
+            --wrap="$SETUP_CMDS
+            Rscript analysis/heat/an_08_hs_core.R"
+        ;;
+
+    hs_robust)
+        sbatch \
+            --job-name=hs_robust \
+            --account=$ACCOUNT --partition=$PARTITION \
+            --nodes=1 --ntasks=1 --cpus-per-task=8 --mem=128G --time=12:00:00 \
+            --output=${BASE_DIR}/hs_robust_%j.log \
+            --wrap="$SETUP_CMDS
+            Rscript analysis/heat/an_08_hs_robust.R"
+        ;;
+
+    all_core)
+        sbatch \
+            --job-name=all_core \
+            --account=$ACCOUNT --partition=$PARTITION \
+            --nodes=1 --ntasks=1 --cpus-per-task=8 --mem=196G --time=24:00:00 \
+            --output=${BASE_DIR}/all_core_%j.log \
+            --wrap="$SETUP_CMDS
+            Rscript analysis/heat/an_08_all_core.R"
+        ;;
+
+    all_robust)
+        sbatch \
+            --job-name=all_robust \
+            --account=$ACCOUNT --partition=$PARTITION \
+            --nodes=1 --ntasks=1 --cpus-per-task=8 --mem=196G --time=12:00:00 \
+            --output=${BASE_DIR}/all_robust_%j.log \
+            --wrap="$SETUP_CMDS
+            Rscript analysis/heat/an_08_all_robust.R"
+        ;;
+
+    an08_suite)
+        # convenience: submit all four as independent jobs
+        for t in hs_core hs_robust all_core all_robust; do bash $0 $t; done
+        ;;
+        
+    summer_boot)
+        sbatch --job-name=summer_boot \
+            --account=$ACCOUNT --partition=$PARTITION \
+            --nodes=1 --ntasks=1 --cpus-per-task=8 --mem=128G --time=6:00:00 \
+            --output=${BASE_DIR}/summer_boot_%j.log \
+            --wrap="$SETUP_CMDS
+            Rscript analysis/heat/an_08_summer_boot.R"
+        ;;
+
+    all_seasonal)
+        sbatch --job-name=all_seasonal \
+            --account=$ACCOUNT --partition=$PARTITION \
+            --nodes=1 --ntasks=1 --cpus-per-task=8 --mem=196G --time=12:00:00 \
+            --output=${BASE_DIR}/all_seasonal_%j.log \
+            --wrap="$SETUP_CMDS
+            Rscript analysis/heat/an_08_all_seasonal.R"
+        ;;
+        
+    hs_dclevel)
+        sbatch --job-name=hs_dclevel \
+            --account=$ACCOUNT --partition=$PARTITION \
+            --nodes=1 --ntasks=1 --cpus-per-task=8 --mem=128G --time=4:00:00 \
+            --output=${BASE_DIR}/hs_dclevel_%j.log \
+            --wrap="$SETUP_CMDS
+            Rscript analysis/heat/an_08_hs_dclevel.R"
+        ;;
+        
     fig_viz)
         sbatch \
             --job-name=fig_viz \

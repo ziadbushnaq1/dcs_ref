@@ -18,18 +18,20 @@ anchor <- tibble(grp = "hs", ring_idx = 1L, intens = TRUE,
                  contam_scope = "all", contam_timing = "static",
                  contam_buffer = 0L)
 
-# ── EDIT HERE: each block is one robustness axis ────────────────────────
+# ── EDIT HERE: each row differs from the anchor in exactly one axis ─────
 params <- bind_rows(
-  anchor,                                                        # 1 anchor
-  anchor %>% mutate(mod_fe = "pixel_id + year^export_id"),       # FE ladder
+  anchor,                                                       # anchor
+  anchor %>% mutate(mod_fe = "pixel_id + year^export_id"),      # FE ladder
   anchor %>% mutate(mod_fe = "pixel_id + year^month"),
-  anchor %>% mutate(mod_fe = "pixel_id + year^sensor"),          # L5/L89 seam
-  anchor %>% mutate(cluster_var = "campus_id"),                  # clustering
-  anchor %>% mutate(treat_scope = "hs_only"),                    # dose roster
-  anchor %>% mutate(contam_scope = "hs_only"),                   # drop roster
-  anchor %>% mutate(contam_timing = "static_dated"),             # keep undated-nbrs
-  anchor %>% mutate(contam_timing = "dynamic", contam_buffer = 0L),
+  anchor %>% mutate(mod_fe = "pixel_id + year^sensor"),         # L5/L89 seam
+  anchor %>% mutate(mod_fe = "pixel_id + year^campus_id"), 
+  anchor %>% mutate(cluster_var = "export_id"),                 # clustering
+  anchor %>% mutate(cluster_var = "none"), 
+  anchor %>% mutate(treat_scope = "hs_only"),                   # dose roster
+  anchor %>% mutate(contam_scope = "hs_only"),                  # drop roster
+  anchor %>% mutate(contam_timing = "dynamic", contam_buffer = 0L),  # timing
   anchor %>% mutate(contam_timing = "dynamic", contam_buffer = 3L))
+                    
 # ────────────────────────────────────────────────────────────────────────
 
 run_ring_grid(params, d$pixel_data, GROUPS, MASTER_SETS, spatial_rings,
