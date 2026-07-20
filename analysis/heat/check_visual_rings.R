@@ -14,7 +14,7 @@ hyperscale_facilities <- roster %>%
 # 2. Load ALL Operational Facilities (Background)
 master_ops <- read_csv(here("data","data_final","clean01_datacenter.csv"),
                        show_col_types = FALSE) %>%
-  filter(stage == "Operational") %>%
+  filter(stage %in% c("Operational", "Under Construction")) %>%
   st_as_sf(coords = c("projected_x","projected_y"), crs = 5070)
 
 # 3. Create the spatial buffers for ONLY the hyperscale facilities

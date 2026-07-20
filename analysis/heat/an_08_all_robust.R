@@ -52,7 +52,7 @@ MASTER_SETS <- list(
   # (~0.2C in our own estimates) but are excluded from `all` because the
   # stage filter targets operational facilities. NEVER use as treat_scope:
   # construction-stage facilities have no operational dose.
-  all_oc   = master_full %>% filter(stage %in% c("Operational", "Construction")))
+  all_oc   = master_full %>% filter(stage %in% c("Operational", "Under Construction")))
 GROUPS <- list(all = dc_points_all)
 spatial_rings <- list(c(0, 600))      # headline ring only
 # ── EDIT HERE: anchor + one-axis deviations ─────────────────────────────
