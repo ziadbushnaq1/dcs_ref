@@ -69,22 +69,24 @@ params <- bind_rows(params,
                                 mod_fe = "pixel_id + year^export_id",
                                 stringsAsFactors = FALSE))
 
+# year^month (seasonal scene composition) only for the primary ring
 params <- bind_rows(params,
-                    expand.grid(grp = names(GROUPS), ring_idx = 3L,   # match your headline ring
+                    expand.grid(grp = names(GROUPS), ring_idx = 4L,   # 0-600 primary
                                 intens = c(FALSE, TRUE),
                                 use_construction = c(FALSE, TRUE),
                                 mod_fe = "pixel_id + year^month",
-                                stringsAsFactors = FALSE) %>%
-                      mutate(drop_unknown_controls = TRUE))
+                                stringsAsFactors = FALSE))
 
-# All existing rows use the default (drop unknown-neighbor controls)
+# Default: drop controls near unknown-date DCs (applies to every row above)
 params$drop_unknown_controls <- TRUE
 
-# One extra row: headline cell only (all-DC group, ring 300-600, intensity,
-# construction dummy, baseline FE) with unknown-neighbor controls KEPT.
-# ring_idx = 3L because spatial_rings[[3]] is c(300, 600).
+# One extra row: headline cell only (all-DC group, 0-600 primary ring,
+# intensity, construction dummy, baseline FE) with unknown-neighbor
+# controls KEPT. intens must be TRUE here -- the flag only has an effect
+# inside the use_intensity branch of run_pixel_analysis.
+# ring_idx = 4L because spatial_rings[[4]] is c(0, 600).
 params <- bind_rows(params,
-                    tibble(grp = "all", ring_idx = 3L,
+                    tibble(grp = "all", ring_idx = 4L,
                            intens = TRUE, use_construction = TRUE,
                            mod_fe = "pixel_id + year",
                            drop_unknown_controls = FALSE))
@@ -141,7 +143,7 @@ for (i in seq_len(nrow(params))) {
       ring_max = ring[2],
       ring_label = paste0(ring[1],"-",ring[2],"m"),
       intensity = intens,
-      use_construction = constr_flag,,
+      use_construction = constr_flag,
       drop_unknown_controls = unk_flag,
       fe_spec = mod_fe, 
       ref_year = REF_YEAR,

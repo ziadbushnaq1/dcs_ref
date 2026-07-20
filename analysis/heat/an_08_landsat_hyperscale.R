@@ -35,10 +35,39 @@ params <- expand.grid(
   stringsAsFactors = FALSE
 )
 params$cluster_var <- "export_id"
+# campus-level clustering robustness at the primary ring only.
+# NOTE: ring_idx == 3 is c(0, 600) in THIS script's spatial_rings ordering
+# (the all-DC script orders its list differently -- 0-600 is index 4 there).
 params <- bind_rows(params,
-                    params %>% filter(ring_idx == 1, mod_fe == "pixel_id + year") %>%   # 300-600 primary
+                    params %>% filter(ring_idx == 3, mod_fe == "pixel_id + year") %>%
                       mutate(cluster_var = "campus_id"))
 
+# ── Roster scopes (bind only when intens = TRUE; inert for binary rows) ──
+#  treat_scope : which facilities count toward n_treating dose
+#  contam_scope: which facilities' proximity disqualifies control pixels
+# Preferred spec for the whole grid: hs-only dose, all dcs drop.
+params$treat_scope  <- "hs_only"
+params$contam_scope <- "all"
+
+# Remaining 3 roster combos at the headline cell only (0-600, intensity,
+# construction, baseline FE, export_id clustering), so the 4-way comparison
+# holds everything else fixed.
+combo_rows <- expand.grid(treat_scope  = c("all", "hs_only"),
+                          contam_scope = c("all", "hs_only"),
+                          stringsAsFactors = FALSE) %>%
+  filter(!(treat_scope == "hs_only" & contam_scope == "all")) %>%  # already in grid
+  mutate(ring_idx = 3L, intens = TRUE, use_construction = TRUE,
+         mod_fe = "pixel_id + year", cluster_var = "export_id")
+params <- bind_rows(params, combo_rows)
+
+# Roster lookup for the scope flags. capacity_type comes from
+# clean01_datacenter.csv (same filter contamination_eval.R uses).
+stopifnot("capacity_type" %in% names(master_ops))
+MASTER_SETS <- list(
+  all     = master_ops,
+  hs_only = master_ops %>% filter(capacity_type == "Hyperscaler"))
+cat("Roster sizes | all:", nrow(MASTER_SETS$all),
+    "| hs_only:", nrow(MASTER_SETS$hs_only), "\n")
 out <- list()
 
 # Hardcoded to exact GEE extraction bounds
@@ -69,6 +98,9 @@ for (i in 1:nrow(params)) {
   intens <- params$intens[i]
   constr_flag <- params$use_construction[i] 
   mod_fe <- params$mod_fe[i]
+  clust <- params$cluster_var[i]
+  t_scope <- params$treat_scope[i]
+  c_scope <- params$contam_scope[i]
   
   cat(sprintf("[%d/%d] Ring: %s-%sm | Intens: %s | Construct: %s | FE: %s\n", 
               i, nrow(params), ring[1], ring[2], intens, constr_flag, mod_fe))
@@ -88,9 +120,11 @@ for (i in 1:nrow(params)) {
       is_event_study = FALSE,
       ref_year = REF_YEAR,
       use_intensity = intens, 
-      master_dcs = if (intens) master_ops else NULL,
+      master_dcs = if (intens) MASTER_SETS[[t_scope]] else NULL,
       sensor = "landsat_monthly",
-      use_construction = constr_flag
+      use_construction = constr_flag,
+      cluster_var = clust,
+      contamination_master = if (intens) MASTER_SETS[[c_scope]] else NULL
     )
   }, error = function(e) { 
     message(" -> SKIP: ", conditionMessage(e))
@@ -108,7 +142,10 @@ for (i in 1:nrow(params)) {
       ring_max = ring[2],
       ring_label = paste0(ring[1], "-", ring[2], "m"),
       intensity = intens, 
-      use_construction = constr_flag, 
+      use_construction = constr_flag,
+      cluster_var = clust,
+      treat_scope = if (intens) t_scope else NA_character_,
+      contam_scope = if (intens) c_scope else NA_character_,
       ref_year = REF_YEAR,
       fe_spec = mod_fe,
       term = tm,

@@ -220,6 +220,33 @@ assign_treatment_intensity <- function(pixels_classified, master_dcs_sf,
               by = c("longitude", "latitude"))
 }
 
+# ==============================================================================
+# flag_contaminated_controls: pixel-level boolean for proximity to any DC in
+# contam_dcs_sf, dated or undated (a static drop needs no timing split).
+# Exists so the control-drop roster can differ from the dose roster that
+# assign_treatment_intensity uses for n_treating.
+# ==============================================================================
+flag_contaminated_controls <- function(pixels_classified, contam_dcs_sf,
+                                       radius_m = 600) {
+  contam_proj <- contam_dcs_sf %>%
+    st_transform(5070) %>%
+    mutate(mx = st_coordinates(.)[,1], my = st_coordinates(.)[,2]) %>%
+    st_drop_geometry()
+  
+  px <- pixels_classified %>%
+    distinct(longitude, latitude, pixel_x, pixel_y)
+  
+  nn <- RANN::nn2(as.matrix(contam_proj[, c("mx","my")]),
+                  as.matrix(px[, c("pixel_x","pixel_y")]),
+                  k = min(15, nrow(contam_proj)),
+                  searchtype = "radius", radius = radius_m)
+  px$near_contam_dc <- rowSums(nn$nn.idx > 0) > 0
+  
+  pixels_classified %>%
+    left_join(px %>% select(longitude, latitude, near_contam_dc),
+              by = c("longitude", "latitude"))
+}
+
 drop_conflicted_cells <- function(pixels_classified, treat_only = TRUE) {
   # Physical pixel = (longitude, latitude) rounded upstream to 6dp.
   # treat_only = TRUE  -> drop only pixels in >=2 facilities' TREATMENT rings
@@ -317,7 +344,8 @@ run_pixel_analysis <- function(raw_csv_data, dc_points,
                                is_event_study = FALSE, ref_year = -1,
                                use_nlcd_control = FALSE, use_intensity = FALSE, master_dcs = NULL,
                                sensor = "landsat", drop_conflicts = FALSE, use_construction = FALSE, 
-                               cluster_var = "export_id", drop_unknown_controls = TRUE) {
+                               cluster_var = "export_id", drop_unknown_controls = TRUE, 
+                               contamination_master = NULL) {
   
   if (use_power_builtout) {
     dc_points <- dc_points %>% filter(!is.na(power_builtout))
@@ -335,14 +363,23 @@ run_pixel_analysis <- function(raw_csv_data, dc_points,
       classified_data, master_dcs, treat_radius_m = 600)   # contamination radius fixed at 600
     if (!"near_unknown_dc" %in% names(classified_data))
       classified_data$near_unknown_dc <- FALSE
-    # STATIC drop: control pixel within 600m of ANY inventory DC, any year.
-    # drop_unknown_controls = FALSE keeps controls near undated DCs while
-    # still dropping controls near dated DCs (first_treat_year term stays
-    # unconditional -- those are verifiably contaminated).
-    classified_data <- classified_data %>%
-      filter(!(status == "Control" &
-                 (!is.na(first_treat_year) |
-                    (drop_unknown_controls & near_unknown_dc))))
+    # STATIC control drop. Two paths:
+    #  - contamination_master = NULL (legacy): drop controls near any DC in
+    #    master_dcs (dated always; undated per drop_unknown_controls).
+    #  - contamination_master supplied: drop controls near any DC in THAT
+    #    roster instead, dated or undated alike. Decouples the drop roster
+    #    from the dose roster; drop_unknown_controls is inert on this path.
+    if (is.null(contamination_master)) {
+      classified_data <- classified_data %>%
+        filter(!(status == "Control" &
+                   (!is.na(first_treat_year) |
+                      (drop_unknown_controls & near_unknown_dc))))
+    } else {
+      classified_data <- flag_contaminated_controls(
+        classified_data, contamination_master, radius_m = 600)
+      classified_data <- classified_data %>%
+        filter(!(status == "Control" & near_contam_dc))
+    }
   }
   
   if(drop_conflicts){

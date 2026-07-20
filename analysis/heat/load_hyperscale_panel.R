@@ -19,7 +19,8 @@ load_hyperscale_panel <- function() {
     if (length(id_vec) == 0) return(NA_character_)
     glue::glue("SELECT {cols}
                 FROM read_csv('{f[[src]]}', ignore_errors=true, union_by_name=true)
-                WHERE export_id IN ({paste(id_vec, collapse=',')})")
+                WHERE export_id IN ({paste(id_vec, collapse=',')})
+                  AND scene_cloud_cover < 30")
   }) %>% purrr::discard(is.na) %>% paste(collapse = "\nUNION ALL BY NAME\n")
   
   con <- dbConnect(duckdb::duckdb()); DBI::dbExecute(con, "SET memory_limit='24GB'")
@@ -36,6 +37,10 @@ load_hyperscale_panel <- function() {
     SELECT src.* FROM src JOIN best USING (export_id, year, month, date_yyyymmdd)"))
   DBI::dbDisconnect(con)
   
+  
+  cat("Loader: cloud filter <30 | rows:",
+      format(nrow(pixel_data), big.mark = ","), "\n")
+  print(dplyr::count(pixel_data, sensor))
   # audit line — panel composition should match the roster exactly
   got <- sort(unique(pixel_data$export_id))
   missing <- setdiff(roster$export_id, got)
