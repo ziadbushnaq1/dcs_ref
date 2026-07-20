@@ -1,0 +1,150 @@
+Running "module reset". Resetting modules to system default. The following $MODULEPATH directories have been removed: None
+Setting R_LIBS_USER to: /home/ziadbushnaq1/R/tinkercliffs-rome/4.4.2
+── Attaching core tidyverse packages ──────────────────────── tidyverse 2.0.0 ──
+✔ dplyr     1.2.1     ✔ readr     2.2.0
+✔ forcats   1.0.1     ✔ stringr   1.5.1
+✔ ggplot2   4.0.3     ✔ tibble    3.2.1
+✔ lubridate 1.9.5     ✔ tidyr     1.3.2
+✔ purrr     1.0.2     
+── Conflicts ────────────────────────────────────────── tidyverse_conflicts() ──
+✖ dplyr::filter() masks stats::filter()
+✖ dplyr::lag()    masks stats::lag()
+ℹ Use the conflicted package (<http://conflicted.r-lib.org/>) to force all conflicts to become errors
+Linking to GEOS 3.12.2, GDAL 3.10.0, PROJ 9.4.1; sf_use_s2() is TRUE
+(Permanently remove the following message with fixest_startup_msg(FALSE).)
+fixest 0.10.0:
+- vcov: new argument 'vcov' that replaces 'se' and 'cluster' in all functions
+(retro compatibility is ensured).
+- Breaking: arg. 'vcov' now comes after 'data'/'family', hence code using an
+offset w/t the arg. name may break (just use 'offset = stuff' now).
+- function 'dof()' has been renamed into 'ssc()' (i.e. small sample correction).
+From fixest 0.9.0 onward: BREAKING changes! 
+- In i():
+    + the first two arguments have been swapped! Now it's i(factor_var,
+    continuous_var) for interactions.
+    + argument 'drop' has been removed (put everything in 'ref' now).
+- In feglm(): 
+    + the default family becomes 'gaussian' to be in line with glm(). Hence, for
+    Poisson estimations, please use fepois() instead.
+here() starts at /projects/dspg_viz/ziadbushnaq1/data_centers
+Loading required package: DBI
+[1] 0
+
+==== Dataset Dimensions ====
+Total Panel Observations (Rows): 32,018,478 
+Distinct Physical 30m Pixels:    156,728 
+Average observations per pixel:  204.3 
+  sensor        n
+1      5 22016056
+2      8 10002422
+============================
+
+Facilities in panel: 16 
+
+=======================================================================
+ TIMELINE ALERT: Standard Event Study Baseline (Ref Year -1 )
+=======================================================================
+
+==== Starting Expanded Spatial Ring Loop ====
+Total models queued: 24 
+
+[1/24] Ring: 300-600m | Intens: FALSE | Construct: FALSE | FE: pixel_id + year
+NOTE: 60 observations removed because of NA values (LHS: 60).
+[2/24] Ring: 0-300m | Intens: FALSE | Construct: FALSE | FE: pixel_id + year
+NOTE: 8 observations removed because of NA values (LHS: 8).
+[3/24] Ring: 0-600m | Intens: FALSE | Construct: FALSE | FE: pixel_id + year
+NOTE: 68 observations removed because of NA values (LHS: 68).
+[4/24] Ring: 300-600m | Intens: TRUE | Construct: FALSE | FE: pixel_id + year
+NOTE: 60 observations removed because of NA values (LHS: 60).
+[5/24] Ring: 0-300m | Intens: TRUE | Construct: FALSE | FE: pixel_id + year
+NOTE: 8 observations removed because of NA values (LHS: 8).
+[6/24] Ring: 0-600m | Intens: TRUE | Construct: FALSE | FE: pixel_id + year
+NOTE: 68 observations removed because of NA values (LHS: 68).
+[7/24] Ring: 300-600m | Intens: FALSE | Construct: TRUE | FE: pixel_id + year
+NOTE: 60 observations removed because of NA values (LHS: 60).
+[8/24] Ring: 0-300m | Intens: FALSE | Construct: TRUE | FE: pixel_id + year
+NOTE: 8 observations removed because of NA values (LHS: 8).
+[9/24] Ring: 0-600m | Intens: FALSE | Construct: TRUE | FE: pixel_id + year
+NOTE: 68 observations removed because of NA values (LHS: 68).
+[10/24] Ring: 300-600m | Intens: TRUE | Construct: TRUE | FE: pixel_id + year
+NOTE: 60 observations removed because of NA values (LHS: 60).
+[11/24] Ring: 0-300m | Intens: TRUE | Construct: TRUE | FE: pixel_id + year
+NOTE: 8 observations removed because of NA values (LHS: 8).
+[12/24] Ring: 0-600m | Intens: TRUE | Construct: TRUE | FE: pixel_id + year
+NOTE: 68 observations removed because of NA values (LHS: 68).
+[13/24] Ring: 300-600m | Intens: FALSE | Construct: FALSE | FE: pixel_id + year^export_id
+NOTE: 60 observations removed because of NA values (LHS: 60).
+[14/24] Ring: 0-300m | Intens: FALSE | Construct: FALSE | FE: pixel_id + year^export_id
+NOTE: 8 observations removed because of NA values (LHS: 8).
+[15/24] Ring: 0-600m | Intens: FALSE | Construct: FALSE | FE: pixel_id + year^export_id
+NOTE: 68 observations removed because of NA values (LHS: 68).
+[16/24] Ring: 300-600m | Intens: TRUE | Construct: FALSE | FE: pixel_id + year^export_id
+NOTE: 60 observations removed because of NA values (LHS: 60).
+[17/24] Ring: 0-300m | Intens: TRUE | Construct: FALSE | FE: pixel_id + year^export_id
+NOTE: 8 observations removed because of NA values (LHS: 8).
+[18/24] Ring: 0-600m | Intens: TRUE | Construct: FALSE | FE: pixel_id + year^export_id
+NOTE: 68 observations removed because of NA values (LHS: 68).
+[19/24] Ring: 300-600m | Intens: FALSE | Construct: TRUE | FE: pixel_id + year^export_id
+NOTE: 60 observations removed because of NA values (LHS: 60).
+[20/24] Ring: 0-300m | Intens: FALSE | Construct: TRUE | FE: pixel_id + year^export_id
+NOTE: 8 observations removed because of NA values (LHS: 8).
+[21/24] Ring: 0-600m | Intens: FALSE | Construct: TRUE | FE: pixel_id + year^export_id
+NOTE: 68 observations removed because of NA values (LHS: 68).
+[22/24] Ring: 300-600m | Intens: TRUE | Construct: TRUE | FE: pixel_id + year^export_id
+NOTE: 60 observations removed because of NA values (LHS: 60).
+[23/24] Ring: 0-300m | Intens: TRUE | Construct: TRUE | FE: pixel_id + year^export_id
+NOTE: 8 observations removed because of NA values (LHS: 8).
+[24/24] Ring: 0-600m | Intens: TRUE | Construct: TRUE | FE: pixel_id + year^export_id
+NOTE: 68 observations removed because of NA values (LHS: 68).
+
+
+==== Results: Baseline Models (use_construction = FALSE) ====
+
+
+| ring_min| ring_max|ring_label |intensity |use_construction | ref_year|fe_spec                   |term         | estimate|    se| p_value|    n_obs| n_treat_obs| n_ctrl_obs| n_treat_px| n_ctrl_px| n_treat_dcs| n_ctrl_dcs| ratio_px|
+|--------:|--------:|:----------|:---------|:----------------|--------:|:-------------------------|:------------|--------:|-----:|-------:|--------:|-----------:|----------:|----------:|---------:|-----------:|----------:|--------:|
+|        0|      300|0-300m     |FALSE     |FALSE            |       -1|pixel_id + year           |treated_post |    0.432| 0.410|   0.309| 18974907|     1287831|   17687076|       6291|     86454|          16|         16|    0.073|
+|        0|      600|0-600m     |FALSE     |FALSE            |       -1|pixel_id + year           |treated_post |    0.493| 0.227|   0.046| 22824187|     5137111|   17687076|      25179|     86454|          16|         16|    0.291|
+|      300|      600|300-600m   |FALSE     |FALSE            |       -1|pixel_id + year           |treated_post |    0.523| 0.206|   0.022| 21536356|     3849280|   17687076|      18888|     86454|          16|         16|    0.218|
+|        0|      300|0-300m     |TRUE      |FALSE            |       -1|pixel_id + year           |treated_post |    0.323| 0.329|   0.342| 18962938|     1287831|   17675107|       6291|     86454|          16|         16|    0.073|
+|        0|      600|0-600m     |TRUE      |FALSE            |       -1|pixel_id + year           |treated_post |    0.335| 0.149|   0.040| 22706681|     5137111|   17569570|      25179|     86454|          16|         16|    0.291|
+|      300|      600|300-600m   |TRUE      |FALSE            |       -1|pixel_id + year           |treated_post |    0.346| 0.117|   0.010| 21418850|     3849280|   17569570|      18888|     86454|          16|         16|    0.218|
+|        0|      300|0-300m     |FALSE     |FALSE            |       -1|pixel_id + year^export_id |treated_post |    0.437| 0.413|   0.308| 18974907|     1287831|   17687076|       6291|     86454|          16|         16|    0.073|
+|        0|      600|0-600m     |FALSE     |FALSE            |       -1|pixel_id + year^export_id |treated_post |    0.519| 0.238|   0.046| 22824187|     5137111|   17687076|      25179|     86454|          16|         16|    0.291|
+|      300|      600|300-600m   |FALSE     |FALSE            |       -1|pixel_id + year^export_id |treated_post |    0.547| 0.212|   0.021| 21536356|     3849280|   17687076|      18888|     86454|          16|         16|    0.218|
+|        0|      300|0-300m     |TRUE      |FALSE            |       -1|pixel_id + year^export_id |treated_post |    0.326| 0.331|   0.340| 18962938|     1287831|   17675107|       6291|     86454|          16|         16|    0.073|
+|        0|      600|0-600m     |TRUE      |FALSE            |       -1|pixel_id + year^export_id |treated_post |    0.344| 0.155|   0.042| 22706681|     5137111|   17569570|      25179|     86454|          16|         16|    0.291|
+|      300|      600|300-600m   |TRUE      |FALSE            |       -1|pixel_id + year^export_id |treated_post |    0.357| 0.123|   0.011| 21418850|     3849280|   17569570|      18888|     86454|          16|         16|    0.218|
+
+
+==== Results: Construction Models (use_construction = TRUE) ====
+
+
+| ring_min| ring_max|ring_label |intensity |use_construction | ref_year|fe_spec                   |term                | estimate|    se| p_value|    n_obs| n_treat_obs| n_ctrl_obs| n_treat_px| n_ctrl_px| n_treat_dcs| n_ctrl_dcs| ratio_px|
+|--------:|--------:|:----------|:---------|:----------------|--------:|:-------------------------|:-------------------|--------:|-----:|-------:|--------:|-----------:|----------:|----------:|---------:|-----------:|----------:|--------:|
+|        0|      300|0-300m     |FALSE     |TRUE             |       -1|pixel_id + year           |treated_post        |    0.450| 0.427|   0.308| 18974907|     1287831|   17687076|       6291|     86454|          16|         16|    0.073|
+|        0|      300|0-300m     |FALSE     |TRUE             |       -1|pixel_id + year           |construction_period |    0.182| 0.311|   0.567| 18974907|     1287831|   17687076|       6291|     86454|          16|         16|    0.073|
+|        0|      600|0-600m     |FALSE     |TRUE             |       -1|pixel_id + year           |treated_post        |    0.501| 0.235|   0.050| 22824187|     5137111|   17687076|      25179|     86454|          16|         16|    0.291|
+|        0|      600|0-600m     |FALSE     |TRUE             |       -1|pixel_id + year           |construction_period |    0.064| 0.198|   0.750| 22824187|     5137111|   17687076|      25179|     86454|          16|         16|    0.291|
+|      300|      600|300-600m   |FALSE     |TRUE             |       -1|pixel_id + year           |treated_post        |    0.525| 0.210|   0.025| 21536356|     3849280|   17687076|      18888|     86454|          16|         16|    0.218|
+|      300|      600|300-600m   |FALSE     |TRUE             |       -1|pixel_id + year           |construction_period |    0.010| 0.208|   0.961| 21536356|     3849280|   17687076|      18888|     86454|          16|         16|    0.218|
+|        0|      300|0-300m     |TRUE      |TRUE             |       -1|pixel_id + year           |treated_post        |    0.332| 0.340|   0.345| 18962938|     1287831|   17675107|       6291|     86454|          16|         16|    0.073|
+|        0|      300|0-300m     |TRUE      |TRUE             |       -1|pixel_id + year           |construction_period |    0.155| 0.317|   0.631| 18962938|     1287831|   17675107|       6291|     86454|          16|         16|    0.073|
+|        0|      600|0-600m     |TRUE      |TRUE             |       -1|pixel_id + year           |treated_post        |    0.336| 0.152|   0.043| 22706681|     5137111|   17569570|      25179|     86454|          16|         16|    0.291|
+|        0|      600|0-600m     |TRUE      |TRUE             |       -1|pixel_id + year           |construction_period |    0.012| 0.197|   0.951| 22706681|     5137111|   17569570|      25179|     86454|          16|         16|    0.291|
+|      300|      600|300-600m   |TRUE      |TRUE             |       -1|pixel_id + year           |treated_post        |    0.344| 0.118|   0.010| 21418850|     3849280|   17569570|      18888|     86454|          16|         16|    0.218|
+|      300|      600|300-600m   |TRUE      |TRUE             |       -1|pixel_id + year           |construction_period |   -0.045| 0.200|   0.824| 21418850|     3849280|   17569570|      18888|     86454|          16|         16|    0.218|
+|        0|      300|0-300m     |FALSE     |TRUE             |       -1|pixel_id + year^export_id |treated_post        |    0.452| 0.429|   0.309| 18974907|     1287831|   17687076|       6291|     86454|          16|         16|    0.073|
+|        0|      300|0-300m     |FALSE     |TRUE             |       -1|pixel_id + year^export_id |construction_period |    0.164| 0.314|   0.609| 18974907|     1287831|   17687076|       6291|     86454|          16|         16|    0.073|
+|        0|      600|0-600m     |FALSE     |TRUE             |       -1|pixel_id + year^export_id |treated_post        |    0.523| 0.244|   0.049| 22824187|     5137111|   17687076|      25179|     86454|          16|         16|    0.291|
+|        0|      600|0-600m     |FALSE     |TRUE             |       -1|pixel_id + year^export_id |construction_period |    0.046| 0.205|   0.825| 22824187|     5137111|   17687076|      25179|     86454|          16|         16|    0.291|
+|      300|      600|300-600m   |FALSE     |TRUE             |       -1|pixel_id + year^export_id |treated_post        |    0.548| 0.216|   0.023| 21536356|     3849280|   17687076|      18888|     86454|          16|         16|    0.218|
+|      300|      600|300-600m   |FALSE     |TRUE             |       -1|pixel_id + year^export_id |construction_period |    0.007| 0.218|   0.974| 21536356|     3849280|   17687076|      18888|     86454|          16|         16|    0.218|
+|        0|      300|0-300m     |TRUE      |TRUE             |       -1|pixel_id + year^export_id |treated_post        |    0.334| 0.342|   0.344| 18962938|     1287831|   17675107|       6291|     86454|          16|         16|    0.073|
+|        0|      300|0-300m     |TRUE      |TRUE             |       -1|pixel_id + year^export_id |construction_period |    0.138| 0.319|   0.670| 18962938|     1287831|   17675107|       6291|     86454|          16|         16|    0.073|
+|        0|      600|0-600m     |TRUE      |TRUE             |       -1|pixel_id + year^export_id |treated_post        |    0.344| 0.157|   0.044| 22706681|     5137111|   17569570|      25179|     86454|          16|         16|    0.291|
+|        0|      600|0-600m     |TRUE      |TRUE             |       -1|pixel_id + year^export_id |construction_period |   -0.001| 0.202|   0.995| 22706681|     5137111|   17569570|      25179|     86454|          16|         16|    0.291|
+|      300|      600|300-600m   |TRUE      |TRUE             |       -1|pixel_id + year^export_id |treated_post        |    0.355| 0.123|   0.011| 21418850|     3849280|   17569570|      18888|     86454|          16|         16|    0.218|
+|      300|      600|300-600m   |TRUE      |TRUE             |       -1|pixel_id + year^export_id |construction_period |   -0.045| 0.209|   0.833| 21418850|     3849280|   17569570|      18888|     86454|          16|         16|    0.218|
+
+==== Done ====
