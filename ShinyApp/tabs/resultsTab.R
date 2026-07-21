@@ -96,17 +96,16 @@ results_tab <- tabPanel(
         uiOutput("economy_interpretation_output")
       ),
       
-      tabPanel(
-        "Heat",
-        tags$h3("Heat Report"),
-        uiOutput("heat_hypotheses_output"),
-        tags$hr(),
-        uiOutput("heat_model_equation"),
-        tags$hr(),
-        gt_output("heat_table_simple"),
-        gt_output("heat_table_full"),
-        tags$hr(),
-        uiOutput("heat_interpretation_output")
+      tabPanel("Heat Results",
+               h3("Surface Temperature Effects of Data Centers"),
+               p("Difference-in-differences estimates from 30m Landsat land surface
+     temperature around 145 operational data centers (2013\u20132026)."),
+               DT::DTOutput("heat_poster_tbl"),
+               br(),
+               tags$em(textOutput("heat_footnote_txt")),
+               hr(),
+               h4("Full specification detail"),
+               DT::DTOutput("heat_full_tbl")
       )
     )
   )

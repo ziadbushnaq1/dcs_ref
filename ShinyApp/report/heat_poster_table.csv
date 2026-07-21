@@ -1,0 +1,9 @@
+Specification,Sample,Estimate,Answers
+"Warming per facility, 0–600m",145 DCs,0.302 (0.093)**,Headline effect
+ + DC×year fixed effects,145 DCs,0.263 (0.094)**,Survives strictest controls
+Fence-line ring (0–150m),145 DCs,0.447 (0.171)**,Effect strongest in tightest treatment ring
+Construction period (yrs −3 to −1),145 DCs,0.245 (0.093)**,Constuction period has warming effect
+Summer (Jun–Aug),145 DCs,0.498 (0.165)**,Seasonal: solar-driven
+Winter (Dec–Feb),145 DCs,0.057 (0.031)+,Near zero when sun is lower
+Non-hyperscale facilities only,135 DCs,0.299 (0.103)**,Not just the largest facilities
+Hyperscale sample,17 DCs,"0.314 (0.213); 13/17 facilities positive, signed-rank p=0.080; summer wild-bootstrap p=0.053",Consistent in flagship sample

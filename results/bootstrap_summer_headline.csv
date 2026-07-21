@@ -1,0 +1,2 @@
+cell,season,estimate,se_conventional,p_conventional,p_wild_webb,ci_lo,ci_hi,n_clusters
+summer_0-600_intens_constr,summer,0.7971581777627161,0.35777171288427984,0.04056804792544298,0.052505250525052505,-0.00908069970672978,1.6324268028169304,17

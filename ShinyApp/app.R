@@ -384,6 +384,23 @@ server <- function(input, output, session) {
       style_att_table()
   }
   
+  # heat did model table
+  heat_poster   <- readRDS("report/heat_poster_table.rds")
+  heat_full     <- readRDS("report/heat_results_full.rds")
+  heat_footnote <- readRDS("report/heat_footnote.rds")
+  
+  output$heat_poster_tbl <- DT::renderDT(
+    DT::datatable(heat_poster, rownames = FALSE,
+                  options = list(dom = "t", pageLength = 10),  # static table, no search
+                  colnames = c("Specification","Sample","Estimate (SE)","Interpretation")))
+  
+  output$heat_footnote_txt <- renderText(heat_footnote)
+  
+  output$heat_full_tbl <- DT::renderDT(
+    DT::datatable(heat_full, rownames = FALSE, filter = "top",
+                  options = list(pageLength = 15, scrollX = TRUE)))
+  
+  
   # ==========================================================
   # MAPS TAB — Economics: treatment status map
   # ==========================================================
