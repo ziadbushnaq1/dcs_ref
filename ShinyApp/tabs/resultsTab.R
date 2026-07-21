@@ -97,15 +97,56 @@ results_tab <- tabPanel(
       ),
       
       tabPanel("Heat Results",
-               h3("Surface Temperature Effects of Data Centers"),
-               p("Difference-in-differences estimates from 30m Landsat land surface
-     temperature around 145 operational data centers (2013\u20132026)."),
+               tags$h3("Surface Temperature Effects of Data Centers"),
+               tags$p(class = "subtitle", textOutput("heat_subtitle")),
+               tags$hr(),
+               
+               tags$h4("Headline Results"),
+               tags$p("Each row answers one question about the effect of data centers
+                       on nearby land surface temperature."),
                DT::DTOutput("heat_poster_tbl"),
-               br(),
+               tags$br(),
                tags$em(textOutput("heat_footnote_txt")),
-               hr(),
-               h4("Full specification detail"),
-               DT::DTOutput("heat_full_tbl")
+               tags$hr(),
+               
+               tags$h4("All Specifications"),
+               tags$div(
+                 class = "reading-guide",
+                 style = "background:#f6f8fa; border-left:4px solid #0056b3; padding:12px 16px; border-radius:4px; margin-bottom:14px;",
+                 tags$p(
+                   "Each row is one model. ", tags$b("Operational"), " is the effect once the
+                    facility is running; ", tags$b("Construction"), " is the effect during the
+                    three years of site work beforehand. Estimates are in degrees Celsius per
+                    treating facility within 600m, measured against control pixels 1000\u20131500m
+                    away. Rows differ only in the fixed effects, the standard-error clustering,
+                    and which nearby facilities disqualify a control pixel \u2014 the estimate
+                    holding steady across all of them is the robustness result. Use the filter
+                    boxes to narrow, or click a column header to sort."
+                 )
+               ),
+               DT::DTOutput("heat_models_tbl"),
+               tags$hr(),
+               
+               tags$h4("Seasonal Breakdown"),
+               tags$p("Daytime surface warming is driven by solar loading, so the effect is
+                       strongest in summer and near zero in winter."),
+               DT::DTOutput("heat_seasonal_tbl"),
+               tags$hr(),
+               
+               tags$h4("Construction Time-Lapse"),
+               tags$p("Annual summer composites of one analysis facility. Move the slider to
+                       watch land clearing and construction proceed."),
+               sliderInput("tl_year", "Year", min = 2015, max = 2025,
+                           value = 2015, step = 1, sep = "", width = "420px",
+                           animate = animationOptions(interval = 1200)),
+               imageOutput("heat_timelapse_img", height = "480px"),
+               tags$hr(),
+               
+               tags$details(
+                 tags$summary(tags$b("What do these terms mean?")),
+                 tags$br(),
+                 DT::DTOutput("heat_glossary_tbl")
+               )
       )
     )
   )

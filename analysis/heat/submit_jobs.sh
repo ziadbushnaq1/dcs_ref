@@ -221,6 +221,14 @@ case $JOB_TYPE in
             Rscript analysis/heat/an_08_hs_dclevel.R"
         ;;
         
+    shiny_heat)
+        sbatch --job-name=shiny_heat --account=$ACCOUNT --partition=$PARTITION \
+            --nodes=1 --ntasks=1 --cpus-per-task=2 --mem=16G --time=0:20:00 \
+            --output=${BASE_DIR}/shiny_heat_%j.log \
+            --wrap="$SETUP_CMDS
+            Rscript analysis/heat/make_shiny_heat_tables.R"
+        ;;
+        
     fig_viz)
         sbatch \
             --job-name=fig_viz \
@@ -235,6 +243,21 @@ case $JOB_TYPE in
             --wrap="$SETUP_CMDS
             Rscript analysis/heat/fig_distance_profile.R"
         ;;
+        
+    fig_gif)
+        sbatch \
+            --job-name=fig_gif \
+            --account=$ACCOUNT \
+            --partition=$PARTITION \
+            --nodes=1 \
+            --ntasks=1 \
+            --cpus-per-task=8 \
+            --mem=128G \
+            --time=6:00:00 \
+            --output=${BASE_DIR}/fig_gif_%j.log \
+            --wrap="$SETUP_CMDS
+            Rscript analysis/heat/fig_construction_timelapse.R"
+        ;;
 
     fig_event)
         sbatch \
@@ -248,7 +271,7 @@ case $JOB_TYPE in
             --time=2:00:00 \
             --output=${BASE_DIR}/fig_event_%j.log \
             --wrap="$SETUP_CMDS
-            Rscript analysis/heat/fig_event_study.R"
+            Rscript analysis/heat/fig_custom_event_study.R"
         ;;
         
     trend_vis)

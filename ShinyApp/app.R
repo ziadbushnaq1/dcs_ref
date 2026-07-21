@@ -384,21 +384,92 @@ server <- function(input, output, session) {
       style_att_table()
   }
   
-  # heat did model table
+  # ----------------------------------------------------------
+  # RESULTS TAB — Heat: surface temperature DiD tables
+  # ----------------------------------------------------------
   heat_poster   <- readRDS("report/heat_poster_table.rds")
-  heat_full     <- readRDS("report/heat_results_full.rds")
+  heat_models   <- readRDS("report/heat_models.rds")
+  heat_seasonal <- readRDS("report/heat_seasonal.rds")
+  heat_meta     <- readRDS("report/heat_meta.rds")
   heat_footnote <- readRDS("report/heat_footnote.rds")
   
-  output$heat_poster_tbl <- DT::renderDT(
-    DT::datatable(heat_poster, rownames = FALSE,
-                  options = list(dom = "t", pageLength = 10),  # static table, no search
-                  colnames = c("Specification","Sample","Estimate (SE)","Interpretation")))
-  
+  # Subtitle comes from heat_meta so the year range cannot drift from the panel.
+  output$heat_subtitle     <- renderText(heat_meta$subtitle)
   output$heat_footnote_txt <- renderText(heat_footnote)
   
-  output$heat_full_tbl <- DT::renderDT(
-    DT::datatable(heat_full, rownames = FALSE, filter = "top",
-                  options = list(pageLength = 15, scrollX = TRUE)))
+  output$heat_poster_tbl <- DT::renderDT(
+    DT::datatable(
+      heat_poster, rownames = FALSE,
+      options = list(dom = "t", pageLength = 10),
+      colnames = c("Specification", "Sample", "Estimate (SE)", "Interpretation"),
+      caption = htmltools::tags$caption(
+        style = "caption-side: top; text-align: left; font-weight: bold; font-size: 18px;",
+        "Headline Results"
+      )))
+  
+  # One row per model; Operational and Construction estimates are column pairs,
+  # so sorting by any column keeps a model's numbers together.
+  output$heat_models_tbl <- DT::renderDT({
+    num_cols <- grep("Estimate|SE|p-value", names(heat_models), value = TRUE)
+    DT::datatable(
+      heat_models, rownames = FALSE, filter = "top",
+      extensions = c("Buttons", "Responsive"),
+      options = list(
+        dom = "Bfrtip", buttons = c("copy", "csv", "excel"),
+        pageLength = 15, scrollX = TRUE, autoWidth = TRUE,
+        order = list(list(0, "asc"))
+      ),
+      caption = htmltools::tags$caption(
+        style = "caption-side: top; text-align: left; font-weight: bold; font-size: 18px;",
+        "All Specifications (\u00b0C per treating facility)"
+      )
+    ) %>%
+      DT::formatRound(columns = num_cols, digits = 3) %>%
+      DT::formatStyle(
+        columns = c("Operational Estimate", "Construction Estimate"),
+        color = DT::styleInterval(0, c("#b00020", "#006400")),
+        fontWeight = "bold"
+      )
+  })
+  
+  output$heat_seasonal_tbl <- DT::renderDT(
+    DT::datatable(
+      heat_seasonal, rownames = FALSE,
+      options = list(dom = "t"),
+      caption = htmltools::tags$caption(
+        style = "caption-side: top; text-align: left; font-weight: bold; font-size: 18px;",
+        "Seasonal Breakdown (0\u2013600m, 145 facilities)"
+      )) %>%
+      DT::formatRound(columns = c("Estimate", "SE", "p-value"), digits = 3) %>%
+      DT::formatStyle("Estimate",
+                      color = DT::styleInterval(0, c("#b00020", "#006400")),
+                      fontWeight = "bold"))
+  
+  output$heat_glossary_tbl <- DT::renderDT(
+    DT::datatable(heat_meta$glossary, rownames = FALSE,
+                  options = list(dom = "t", pageLength = 20)))
+  
+  # ----- Heat: construction time-lapse ----------------------------------
+  observe({
+    if (file.exists("report/timelapse_index.rds")) {
+      idx <- readRDS("report/timelapse_index.rds")
+      updateSliderInput(session, "tl_year",
+                        min = min(idx$year), max = max(idx$year),
+                        value = min(idx$year), step = 1)
+    }
+  })
+  
+  output$heat_timelapse_img <- renderImage({
+    validate(need(file.exists("report/timelapse_index.rds"),
+                  "timelapse_index.rds not found. Run make_timelapse_index.R."))
+    req(input$tl_year)
+    idx <- readRDS("report/timelapse_index.rds")
+    row <- idx[idx$year == input$tl_year, ]
+    validate(need(nrow(row) > 0, "No image for that year."))
+    list(src = file.path("www", "timelapse", row$file[1]),
+         contentType = "image/png", width = 640,
+         alt = paste("Facility imagery", input$tl_year))
+  }, deleteFile = FALSE)
   
   
   # ==========================================================

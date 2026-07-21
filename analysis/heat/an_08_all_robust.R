@@ -59,17 +59,18 @@ spatial_rings <- list(c(0, 600))      # headline ring only
 anchor <- tibble(grp = "all", ring_idx = 1L, intens = TRUE,
                  use_construction = TRUE, mod_fe = "pixel_id + year",
                  cluster_var = "export_id", treat_scope = "all",
-                 contam_scope = "all", contam_timing = "static",
+                 contam_scope = "all_oc", contam_timing = "dynamic",
                  contam_buffer = 0L)
 
 params <- bind_rows(
-  anchor,
+  anchor,                                                           # primary
+  anchor %>% mutate(contam_timing = "static"),                      # co-primary
+  anchor %>% mutate(contam_timing = "dynamic", contam_buffer = 3L),
+  anchor %>% mutate(cluster_var = "campus_id"),
   anchor %>% mutate(mod_fe = "pixel_id + year^export_id"),
   anchor %>% mutate(mod_fe = "pixel_id + year^month"),
-  anchor %>% mutate(contam_scope = "hs_only"),
-  anchor %>% mutate(contam_scope = "all_oc"),   # + construction-stage drops
-  anchor %>% mutate(contam_timing = "dynamic", contam_buffer = 0L),
-  anchor %>% mutate(contam_timing = "dynamic", contam_buffer = 3L))
+  anchor %>% mutate(contam_scope = "all"),                          # old default
+  anchor %>% mutate(contam_scope = "hs_only"))
 # ────────────────────────────────────────────────────────────────────────
 
 run_ring_grid(params, pixel_data, GROUPS, MASTER_SETS, spatial_rings,

@@ -94,10 +94,47 @@ run_ring_grid <- function(params, pixel_data, groups, master_sets,
     rm(res, ct); gc()
   }
   
-  results <- bind_rows(out)
-  cat("\n==== Results ====\n")
+  # Drop exact duplicate runs (safety net)
+  results <- bind_rows(out) %>% distinct()
+  
+  spec_keys <- c("group","ring_min","ring_max","ring_label","intensity",
+                 "use_construction","fe_spec","treat_scope","contam_scope",
+                 "contam_timing","contam_buffer","term")
+  
+  base <- results %>%
+    filter(cluster_var == "export_id") %>%
+    select(all_of(spec_keys), n_obs, n_treat_dcs,
+           estimate, se_facility = se, p_facility = p_value)
+  
+  unclust <- results %>%
+    filter(cluster_var == "none") %>%
+    select(all_of(spec_keys), se_none = se, p_none = p_value)
+  
+  campus <- results %>%
+    filter(cluster_var == "campus_id") %>%
+    select(all_of(spec_keys), se_campus = se, p_campus = p_value)
+  
+  results_wide <- base %>%
+    left_join(unclust, by = spec_keys) %>%
+    left_join(campus,  by = spec_keys) %>%
+    pivot_wider(
+      id_cols = setdiff(spec_keys, "term"),
+      names_from = term,
+      values_from = c(estimate, se_facility, p_facility,
+                      se_none, p_none, se_campus, p_campus),
+      names_glue = "{term}: {.value}") %>%
+    arrange(fe_spec, contam_scope, contam_timing)
+  
+  print(knitr::kable(results_wide, digits = 3))
+  
+  cat("\n==== Compact ====\n")
   print(knitr::kable(results %>%
-                       arrange(group, fe_spec, intensity, ring_min, desc(term)), digits = 3))
+                       filter(term == "treated_post") %>%
+                       select(fe_spec, contam_scope, contam_timing, contam_buffer,
+                              cluster_var, estimate, se, p_value, n_treat_dcs),
+                     digits = 3))
+  
+  # Save the raw/long format to CSV so make_shiny_heat_tables.R still works
   write_csv(results, out_csv)
   cat("Saved:", out_csv, "\n")
   invisible(results)

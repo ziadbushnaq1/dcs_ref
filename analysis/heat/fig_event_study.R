@@ -8,7 +8,7 @@ f <- here("data","processed","landsat_all146","landsat_all146_obs30m_l89.csv")
 
 # Load with best-date selection (same as an_08 — this IS a model-adjacent figure)
 con <- dbConnect(duckdb()); dbExecute(con, "SET memory_limit='24GB'")
-pixel_data <- dbGetQuery(con, glue::glue("
+pixel_data_145 <- dbGetQuery(con, glue::glue("
   WITH src AS (
     SELECT export_id, longitude, latitude, year, month, date_yyyymmdd,
            LST_Celsius, Elevation
@@ -27,17 +27,28 @@ dbDisconnect(con)
 dc_all <- read_csv(here("data","data_final","isolation_sets","landsat_all.csv"),
                    show_col_types = FALSE) %>%
   st_as_sf(coords = c("projected_x","projected_y"), crs = 5070)
-HS <- c(411,412,648,664,2949,2950,2998,3012,3051,3052)
 
-GROUPS <- list(hyperscale = dc_all %>% filter(export_id %in% HS),
-               all        = dc_all,
-               non_hs     = dc_all %>% filter(!export_id %in% HS))
+# hyperscale group: loader
+d <- load_hyperscale_panel()
+
+# all/non_hs groups: keep the existing DuckDB read of the l89 file as-is,
+# but fix the HS exclusion to the roster:
+roster_ids <- read_csv(here("data","data_final","hyperscale_roster.csv"),
+                       show_col_types = FALSE) %>% pull(export_id)
+dc_all <- read_csv(here("data","data_final","isolation_sets","landsat_all.csv"),
+                   show_col_types = FALSE) %>%
+  st_as_sf(coords = c("projected_x","projected_y"), crs = 5070)
+
+GROUPS <- list(
+  hyperscale = list(px = d$pixel_data, dcs = d$dc_points),
+  all        = list(px = pixel_data_145, dcs = dc_all),
+  non_hs     = list(px = pixel_data_145, dcs = dc_all %>% filter(!export_id %in% roster_ids)))
 
 # Parameters: match your headline an_08 spec
-TREAT_MIN <- 0; TREAT_MAX <- 300; CTRL_MIN <- 1000; CTRL_MAX <- 1500
+TREAT_MIN <- 0; TREAT_MAX <- 600; CTRL_MIN <- 1000; CTRL_MAX <- 1500
 
 for (grp in names(GROUPS)) {
-  cls <- assign_treatment_zones(pixel_data, GROUPS[[grp]],
+  cls <- assign_treatment_zones(GROUPS[[grp]]$px, GROUPS[[grp]]$dcs,
                                 TREAT_MIN, TREAT_MAX, CTRL_MIN, CTRL_MAX, sensor = "landsat")
   cls <- filter_elevation_controls(cls, 50)
   pan <- build_did_panel(cls, sensor = "landsat_monthly")
