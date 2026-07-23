@@ -305,12 +305,107 @@ overview_tab <- tabPanel(
         )
       ),
       
-      # --- Heat placeholder ---------------------------------------------
+      # --- Heat ---------------------------------------------------------
       tags$h3("Heat & Environment Analysis"),
+      
       tags$div(
         class = "info-card",
+        tags$h4("Hypotheses", style = "margin-top:0;"),
+        tags$ul(
+          tags$li(
+            tags$strong("Null hypothesis (H", tags$sub("0"), "): "),
+            "proximity to a data center has ", tags$strong("no effect"),
+            " on land surface temperature."
+          ),
+          tags$li(
+            tags$strong("Alternative hypothesis (H", tags$sub("1"), "): "),
+            "proximity to a data center ", tags$strong("raises"),
+            " land surface temperature."
+          )
+        )
+      ),
+      
+      tags$h4("Design"),
+      tags$p(
+        "The heat analysis uses a two-way fixed effects difference-in-differences design
+        on 30m satellite land surface temperature observations around 145 operational
+        U.S. data centers, 2013 to 2026. Pixels within 600m of a facility are treated;
+        pixels 1000 to 1500m from the same facility serve as controls. Because each
+        pixel's temperature is measured relative to its own facility's control ring in
+        the same month, weather and seasonal shocks common to the area are removed
+        before estimation."
+      ),
+      
+      withMathJax(
+        tags$div(
+          class = "equation-box",
+          "$$ Y_{p,t} = \\alpha_p + \\lambda_t + \\beta D_{p,t} + \\delta C_{p,t} + \\varepsilon_{p,t} $$"
+        )
+      ),
+      
+      methods_panel(
+        "What the terms mean",
+        tags$ul(
+          tags$li(tags$strong("Y", tags$sub("p,t"), ": "), "relative land surface
+                  temperature of pixel ", tags$em("p"), " in month ", tags$em("t"),
+                  ", meaning the pixel's temperature minus the mean of its facility's
+                  control ring that month."),
+          tags$li(tags$strong("\u03B1", tags$sub("p"), ": "), "pixel fixed effects,
+                  absorbing everything permanent about that exact 30m location such as
+                  elevation, slope, and baseline land cover."),
+          tags$li(tags$strong("\u03BB", tags$sub("t"), ": "), "year fixed effects,
+                  absorbing climate variation common to all pixels in a given year."),
+          tags$li(tags$strong("D", tags$sub("p,t"), ": "), "the treatment dose, meaning
+                  the count of operational data centers within 600m of pixel ",
+                  tags$em("p"), " in year ", tags$em("t"), ". ", tags$strong("\u03B2"),
+                  " is therefore the warming attributable to each operating facility."),
+          tags$li(tags$strong("C", tags$sub("p,t"), ": "), "the construction indicator,
+                  equal to 1 in the three years before a facility opens. ",
+                  tags$strong("\u03B4"), " separates land clearing and site work from
+                  the operational effect."),
+          tags$li(tags$strong("\u03B5", tags$sub("p,t"), ": "), "the error term,
+                  clustered by facility.")
+        )
+      ),
+      
+      methods_panel(
+        "Sample and treatment timing",
         tags$p(
-          tags$em("Needs to be worked on.")
+          "The sample is 145 operational facilities whose opening year is known and falls
+          between 2014 and 2024, so that each has both a pre-period and a post-period
+          within the satellite record. Treatment timing is the facility's opening year."
+        ),
+        tags$p(
+          "The baseline is anchored four years before opening rather than one year before.
+          Land cover data show that clearing and construction begin roughly three years
+          ahead of the opening date, so a baseline at year -1 would already be disturbed
+          and would understate the effect."
+        ),
+        tags$p(
+          "Control pixels are excluded if they fall within 600m of any other operational
+          or under-construction data center, since such pixels are not clean
+          counterfactuals."
+        )
+      ),
+      
+      methods_panel(
+        "Outcome and measurement",
+        tags$p(
+          "Land surface temperature comes from Landsat 5, 8, and 9 Collection 2 surface
+          temperature products, retrieved through Google Earth Engine at 30m resolution.
+          Scenes with more than 30 percent cloud cover are excluded, and one best scene is
+          retained per facility-month."
+        ),
+        tags$p(
+          tags$strong("Reading the estimates: "),
+          "coefficients are in degrees Celsius per treating facility. A pixel near several
+          operating facilities is affected by each of them, so a campus with four
+          operational buildings implies roughly four times the single-facility estimate."
+        ),
+        tags$p(
+          "Measurements are daytime, at approximately 10am local time. This captures
+          surface warming from land-cover change well, but understates effects from
+          continuous waste heat, which are expected to be larger at night."
         )
       ),
       

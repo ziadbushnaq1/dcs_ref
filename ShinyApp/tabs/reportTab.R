@@ -356,49 +356,189 @@ heat_report <- report_section(
     
     tags$h2("Heat & Environmental Analysis"),
     
-    # ----------------------------------------------------
-    # 1. Introduction
-    # ----------------------------------------------------
     tags$h3("1. Introduction"),
     tags$p(
-      "..."
+      "Data centers convert open or vegetated land into dense clusters of buildings, ",
+      "parking, and cooling infrastructure, and then run continuously. Both the land ",
+      "conversion and the waste heat are plausible sources of localized warming, but ",
+      "there is little empirical evidence on how much the surrounding area actually warms ",
+      "or how far the effect extends. This matters for communities near proposed sites: ",
+      "surface warming raises cooling demand, compounds heat exposure during summer, and ",
+      "is not typically considered when facilities are permitted."
+    ),
+    tags$p(
+      "This report estimates the change in land surface temperature around data centers ",
+      "using satellite observations, separating the construction phase from normal ",
+      "operation."
     ),
     
-    
-    # ----------------------------------------------------
-    # 2. Data
-    # ----------------------------------------------------
     tags$h3("2. Data"),
-    tags$p("[To be added as the heat/environmental analysis is developed]"),
+    tags$p(
+      "Facility locations, opening years, types, and development stages come from ",
+      "datacentermap.com, an inventory of roughly 6,000 U.S. facilities. Land surface ",
+      "temperature comes from Landsat 5, 8, and 9 Collection 2 Level-2 surface ",
+      "temperature products, retrieved through Google Earth Engine at 30m resolution. ",
+      "Scenes with more than 30 percent cloud cover are excluded, and one best scene is ",
+      "retained per facility-month. The National Land Cover Database provides annual 30m ",
+      "land cover classes, used to verify when construction disturbance begins."
+    ),
+    tags$p(
+      "The analysis sample is 145 operational facilities with known opening years between ",
+      "2014 and 2024, observed from 2013 to 2026. A separate sample of 17 hyperscale ",
+      "facilities is analyzed for comparison."
+    ),
     
-    # ----------------------------------------------------
-    # 3. Methods
-    # ----------------------------------------------------
     tags$h3("3. Methods"),
-    tags$p("[To be added]"),
     
-    # ----------------------------------------------------
-    # 4. Results
-    # ----------------------------------------------------
+    tags$h4("Hypotheses"),
+    tags$ul(
+      tags$li(
+        tags$strong("Null hypothesis (H", tags$sub("0"), "): "),
+        "proximity to a data center has ", tags$strong("no effect"),
+        " on land surface temperature."
+      ),
+      tags$li(
+        tags$strong("Alternative hypothesis (H", tags$sub("1"), "): "),
+        "proximity to a data center ", tags$strong("raises"), " land surface temperature."
+      )
+    ),
+    
+    tags$p(
+      "A two-way fixed effects difference-in-differences design compares pixels within ",
+      "600m of a facility to control pixels 1000 to 1500m from the same facility. The ",
+      "outcome is each pixel's temperature minus the mean of its facility's control ring ",
+      "in the same month, so weather and seasonal shocks common to the area are removed ",
+      "before estimation."
+    ),
+    
+    withMathJax(
+      tags$div(
+        class = "equation-box",
+        "$$ Y_{p,t} = \\alpha_p + \\lambda_t + \\beta D_{p,t} + \\delta C_{p,t} + \\varepsilon_{p,t} $$"
+      )
+    ),
+    
+    tags$p("Where the terms are defined as follows:"),
+    tags$ul(
+      tags$li(tags$strong("Y", tags$sub("p,t"), " "), "— relative land surface temperature ",
+              "of pixel ", tags$em("p"), " in month ", tags$em("t"), "."),
+      tags$li(tags$strong("α", tags$sub("p"), " "), "— pixel fixed effects, absorbing all ",
+              "time-invariant characteristics of that 30m location."),
+      tags$li(tags$strong("λ", tags$sub("t"), " "), "— year fixed effects, absorbing ",
+              "climate variation common to all pixels in a given year."),
+      tags$li(tags$strong("D", tags$sub("p,t"), " "), "— the treatment dose, the count of ",
+              "operational data centers within 600m; ", tags$strong("β"), " is the warming ",
+              "per operating facility."),
+      tags$li(tags$strong("C", tags$sub("p,t"), " "), "— the construction indicator, equal ",
+              "to 1 in the three years before opening; ", tags$strong("δ"), " is its effect."),
+      tags$li(tags$strong("ε", tags$sub("p,t"), " "), "— the error term, clustered by facility.")
+    ),
+    
+    tags$p(
+      "The baseline is anchored four years before opening. Land cover data show that ",
+      "clearing begins roughly three years ahead of the opening date, so a baseline at ",
+      "year -1 would already be disturbed. Control pixels within 600m of any other ",
+      "operational or under-construction facility are excluded."
+    ),
+    
     tags$h3("4. Results"),
-    tags$p("[To be added once the heat/environmental analysis is complete.]"),
     
-    # ----------------------------------------------------
-    # 5. Discussion
-    # ----------------------------------------------------
+    tags$h4("How to Read the Results"),
+    tags$div(
+      class = "reading-guide",
+      style = "background:#f6f8fa; border-left:4px solid #0056b3; padding:12px 16px; border-radius:4px;",
+      tags$p(
+        tags$strong("Units. "),
+        "Estimates are in degrees Celsius per treating facility. A pixel near several ",
+        "operating facilities is affected by each, so a campus with four operational ",
+        "buildings implies roughly four times the single-facility estimate."
+      ),
+      tags$p(
+        tags$strong("Two effects. "),
+        tags$em("Operational"), " is the warming once a facility is running. ",
+        tags$em("Construction"), " is the warming during the three years of site work ",
+        "beforehand. Both are estimated in the same model, so the operational effect is ",
+        "not contaminated by construction disturbance."
+      ),
+      tags$p(
+        tags$strong("Clustering. "),
+        "Standard errors are clustered by facility. Inference treats each of the 145 data ",
+        "centers as one independent observation rather than each of the 124 million ",
+        "pixel-month observations, which would vastly overstate precision."
+      )
+    ),
+    
+    DT::DTOutput("report_heat_poster_tbl"),
+    tags$br(),
+    tags$em(textOutput("report_heat_footnote_txt")),
+    
+    tags$h4("Robustness"),
+    tags$p(
+      "The estimate stays between 0.26 and 0.35 degrees Celsius across more than 60 ",
+      "specifications varying the distance rings, fixed effects, control-exclusion rules, ",
+      "and dose definition. Full specification detail is on the Results tab."
+    ),
+    
     tags$h3("5. Discussion"),
-    tags$p("[To be added]"),
+    tags$p(
+      "Land surface temperature rises about 0.35 degrees Celsius per operational data ",
+      "center within 600m. The effect is strongest at the fence line, roughly 0.45 degrees ",
+      "at 0 to 150m, and declines to about 0.30 degrees by 600m."
+    ),
+    tags$p(
+      "Warming also appears during construction, at roughly 0.27 degrees, indicating that ",
+      "part of the effect comes from land conversion rather than facility operation alone."
+    ),
+    tags$p(
+      "The seasonal pattern points to the mechanism. Warming is concentrated in summer, at ",
+      "about 0.50 degrees, and is near zero in winter. That is what a land-cover effect ",
+      "predicts: vegetated control land cools itself through evaporation in summer, while ",
+      "buildings and pavement cannot, and that contrast disappears when plants are dormant ",
+      "and the sun is low. A direct waste-heat effect would show less seasonal variation. ",
+      "The seasonality also serves as a check on the result, since an artifact of trends or ",
+      "measurement would have no reason to track sun angle."
+    ),
+    tags$p(
+      "Non-hyperscale facilities show a similar per-facility effect, so the warming is not ",
+      "confined to the largest campuses. The 17-facility hyperscale sample gives a ",
+      "consistent estimate but cannot resolve it precisely, since inference with 17 ",
+      "clusters is imprecise regardless of how many pixels are observed."
+    ),
     
-    # ----------------------------------------------------
-    # 6. Conclusion
-    # ----------------------------------------------------
+    tags$h4("Limitations"),
+    tags$ul(
+      tags$li(
+        "The facility inventory records some multi-building campuses as a single point, so ",
+        "land classified as control may contain unrecorded buildings. This biases estimates ",
+        "toward zero, meaning reported effects are conservative."
+      ),
+      tags$li(
+        "Measurements are daytime surface temperature at approximately 10am. Nighttime and ",
+        "air-temperature effects, where continuous waste heat should matter more, are not ",
+        "captured."
+      ),
+      tags$li(
+        "Surface temperature is not air temperature. It describes the thermal state of the ",
+        "ground and rooftops, which drives but does not equal what a person standing nearby ",
+        "would feel."
+      )
+    ),
+    
     tags$h3("6. Conclusion"),
-    tags$p("[Summarize conclusions.]"),
+    tags$p(
+      "Data centers measurably warm the land around them, by roughly 0.35 degrees Celsius ",
+      "per facility within 600m, with the effect concentrated in summer daytime hours when ",
+      "heat exposure and cooling demand are highest. Warming begins during construction, ",
+      "not at opening. Because the estimate is per facility, clustered campuses imply ",
+      "substantially larger local effects than any single-facility number suggests."
+    ),
     
     tags$h3("References"),
     tags$p(tags$em("Full bibliographic details to be completed.")),
     tags$ul(
-      tags$li("...")
+      tags$li("U.S. Geological Survey — Landsat Collection 2 Level-2 Surface Temperature."),
+      tags$li("Multi-Resolution Land Characteristics Consortium — National Land Cover Database."),
+      tags$li("datacentermap.com — data center facility inventory.")
     )
   )
 )

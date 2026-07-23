@@ -133,15 +133,6 @@ results_tab <- tabPanel(
                DT::DTOutput("heat_seasonal_tbl"),
                tags$hr(),
                
-               tags$h4("Construction Time-Lapse"),
-               tags$p("Annual summer composites of one analysis facility. Move the slider to
-                       watch land clearing and construction proceed."),
-               sliderInput("tl_year", "Year", min = 2015, max = 2025,
-                           value = 2015, step = 1, sep = "", width = "420px",
-                           animate = animationOptions(interval = 1200)),
-               imageOutput("heat_timelapse_img", height = "480px"),
-               tags$hr(),
-               
                tags$details(
                  tags$summary(tags$b("What do these terms mean?")),
                  tags$br(),

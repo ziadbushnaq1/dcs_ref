@@ -203,21 +203,10 @@ sub_heat <- tabPanel(
         "in the years around the opening date."
       ),
       
-      fluidRow(
-        column(
-          6,
-          tags$h4("Step through years"),
-          uiOutput("heat_tl_slider_ui"),
-          imageOutput("heat_tl_frame", height = "620px")
-        ),
-        column(
-          6,
-          tags$h4("Animation"),
-          tags$img(
-            src = "timelapse/timelapse_2899.gif",
-            style = "width:100%; max-width:620px; border:1px solid #D3C0C8;"
-          )
-        )
+      tags$div(
+        style = "text-align:center;",
+        tags$img(src = "timelapse/timelapse_2899.gif",
+                 style = "max-width:720px; width:100%; border:1px solid #D3C0C8;")
       ),
       
       tags$div(
@@ -234,6 +223,42 @@ sub_heat <- tabPanel(
       )
     )
   )
+)
+
+sub_dcmap <- tabPanel(
+  "Data Center Locations",
+  fluidRow(
+    column(
+      width = 12,
+      tags$h3("U.S. Data Center Inventory"),
+      tags$p(
+        class = "subtitle",
+        "All facilities in the datacentermap.com inventory, colored by facility",
+        "type or development stage. Toggle to show only the facilities included",
+        "in the temperature analysis."
+      ),
+      fluidRow(
+        column(4, radioButtons("dc_map_color", "Color by",
+                               choices = c("Facility type" = "capacity_type",
+                                           "Stage" = "stage"),
+                               selected = "capacity_type", inline = TRUE)),
+        column(4, checkboxInput("dc_map_analysis_only",
+                                "Analysis sample only (145 facilities)", FALSE))
+      ),
+      leaflet::leafletOutput("dc_location_map", height = "620px"),
+      tags$p(class = "subtitle", textOutput("dc_map_count"))
+    )
+  )
+)
+
+sub_heatfigs <- tabPanel(
+  "Temperature Figures",
+  fluidRow(column(12,
+                  tags$h3("Land Surface Temperature Analysis"),
+                  tags$p(class = "subtitle",
+                         "Key figures from the temperature analysis. Click any image to enlarge."),
+                  uiOutput("heat_gallery")
+  ))
 )
 
 # ============================================================
@@ -268,6 +293,7 @@ maps_tab <- tabPanel(
     type = "tabs",
     
     sub_economics,
+    sub_dcmap,
     sub_heat
   )
 )

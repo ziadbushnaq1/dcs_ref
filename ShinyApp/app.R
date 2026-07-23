@@ -450,33 +450,6 @@ server <- function(input, output, session) {
     DT::datatable(heat_meta$glossary, rownames = FALSE,
                   options = list(dom = "t", pageLength = 20)))
   
-  # ----- Heat: construction time-lapse ----------------------------------
-  heat_tl_idx <- if (file.exists("report/timelapse_index.rds"))
-    readRDS("report/timelapse_index.rds") else NULL
-  
-  output$heat_tl_slider_ui <- renderUI({
-    validate(need(!is.null(heat_tl_idx),
-                  "timelapse_index.rds not found. Run make_timelapse_gif.R."))
-    yrs <- sort(heat_tl_idx$year)
-    sliderInput("heat_tl_year", "Year", min = min(yrs), max = max(yrs),
-                value = min(yrs), step = NULL, sep = "", ticks = TRUE,
-                animate = animationOptions(interval = 1400, loop = TRUE),
-                width = "90%")
-  })
-  
-  output$heat_tl_frame <- renderImage({
-    validate(need(!is.null(heat_tl_idx), "No time-lapse index."))
-    req(input$heat_tl_year)
-    # NAIP years are irregular — snap to the nearest available frame
-    yrs <- heat_tl_idx$year
-    pick <- yrs[which.min(abs(yrs - input$heat_tl_year))]
-    row <- heat_tl_idx[heat_tl_idx$year == pick, ][1, ]
-    list(src = file.path("www", "timelapse", row$file),
-         contentType = "image/png", width = 600,
-         alt = paste("NAIP imagery", pick))
-  }, deleteFile = FALSE)
-  
-  
   # ==========================================================
   # MAPS TAB — Economics: treatment status map
   # ==========================================================
@@ -660,6 +633,78 @@ server <- function(input, output, session) {
       p <- p + ggplot2::scale_x_continuous(labels = scales::comma)
     }
     p
+  })
+  
+  # ----- Heat: data center location map ---------------------------------
+  dc_inventory <- reactive({
+    f <- "report/dc_inventory.rds"
+    validate(need(file.exists(f), "dc_inventory.rds not found. Run make_dc_inventory.R."))
+    readRDS(f)
+  })
+  
+  output$dc_location_map <- leaflet::renderLeaflet({
+    d <- dc_inventory()
+    if (isTRUE(input$dc_map_analysis_only)) d <- dplyr::filter(d, in_analysis)
+    validate(need(nrow(d) > 0, "No facilities match."))
+    
+    varname <- input$dc_map_color %||% "capacity_type"
+    d$grp <- as.character(d[[varname]])
+    d$grp[is.na(d$grp)] <- "Unknown"
+    
+    pal <- leaflet::colorFactor("Set2", domain = sort(unique(d$grp)))
+    labs <- sprintf(
+      "<b>ID %s</b><br/>Type: %s<br/>Stage: %s<br/>Opened: %s",
+      d$export_id, d$capacity_type, d$stage,
+      ifelse(is.na(d$year_operational), "Unknown", d$year_operational)
+    ) |> lapply(htmltools::HTML)
+    
+    leaflet::leaflet(d) |>
+      leaflet::addProviderTiles(leaflet::providers$CartoDB.Positron) |>
+      leaflet::addCircleMarkers(
+        lng = ~longitude, lat = ~latitude,
+        color = ~pal(grp), fillOpacity = 0.75, radius = 4, weight = 1,
+        label = labs,
+        clusterOptions = leaflet::markerClusterOptions(disableClusteringAtZoom = 8)
+      ) |>
+      leaflet::addLegend("bottomright", pal = pal, values = ~grp,
+                         title = if (varname == "stage") "Stage" else "Facility type",
+                         opacity = 0.85)
+  })
+  
+  output$dc_map_count <- renderText({
+    d <- dc_inventory()
+    if (isTRUE(input$dc_map_analysis_only)) d <- dplyr::filter(d, in_analysis)
+    sprintf("Showing %s facilities.", format(nrow(d), big.mark = ","))
+  })
+  
+  # heat analysis visualization
+  heat_figs <- tibble::tribble(
+    ~file, ~title, ~desc,
+    "event_study_all.png", "Event Study",
+    "Effect by year relative to facility opening. Flat estimates before year -4 support the parallel-trends assumption; the rise from -3 onward is construction, and the post-0 level is the operational effect.",
+    "distance_profile_all.png", "Thermal Profile by Distance",
+    "Temperature relative to each facility's own 1000-1500m control ring, before construction versus after opening. The gap is largest at the fence line and closes by roughly 1000m.",
+    "heatmap_fac_3012.png", "Facility Heat Map",
+    "Mean land surface temperature around one facility, before construction and after operation. Dashed rings mark the 300m, 600m, 1000m, and 1500m radii.",
+    "ref_year_justification.png", "Baseline Year Justification",
+    "Land cover composition by year relative to opening. Barren land peaks in the three years before opening, which is why the baseline is anchored at year -4 rather than -1."
+  )
+  
+  output$heat_gallery <- renderUI({
+    rows <- lapply(seq_len(nrow(heat_figs)), function(i) {
+      f <- heat_figs[i, ]
+      if (!file.exists(file.path("www", "heat_figures", f$file))) return(NULL)
+      tags$div(
+        class = "info-card", style = "margin-bottom:22px;",
+        tags$h4(f$title),
+        tags$p(class = "subtitle", f$desc),
+        tags$a(href = file.path("heat_figures", f$file), target = "_blank",
+               tags$img(src = file.path("heat_figures", f$file),
+                        style = "width:100%; max-width:900px; height:auto;
+                                 border:1px solid #D3C0C8;"))
+      )
+    })
+    do.call(tagList, Filter(Negate(is.null), rows))
   })
   
   # ----------------------------------------------------------

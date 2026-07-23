@@ -94,7 +94,8 @@ p <- ggplot(plot_data, aes(rel_year, estimate)) +
         panel.grid.major.x = element_blank(),
         plot.title = element_text(face = "bold", hjust = 0.5),
         plot.caption = element_text(size = 10, margin = margin(t = 12)),
-        axis.title = element_text(face = "bold"))
+        axis.title = element_text(face = "bold"),
+        axis.text = element_text(face = "bold", color = "black", size = 11))
 
 ggsave(here("figures","event_study_all.png"), p,
        width = 11.9, height = 5.9, dpi = 300, bg = "white")

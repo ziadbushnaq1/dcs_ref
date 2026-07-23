@@ -85,7 +85,8 @@ heat_models <- heat_long %>%
 
 heat_seasonal <- seasonal %>%
   filter(term == "treated_post") %>%
-  transmute(Season = str_to_title(season), Months = months,
+  transmute(Season = str_to_title(season),
+            Months = str_replace_all(months, ",", ", "),
             Estimate = estimate, SE = se, `p-value` = p_value)
 
 yr_range <- "2013\u20132026"                     # panel coverage
