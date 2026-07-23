@@ -62,15 +62,17 @@ anchor <- tibble(grp = "all", ring_idx = 1L, intens = TRUE,
                  contam_scope = "all_oc", contam_timing = "dynamic",
                  contam_buffer = 0L)
 
-params <- bind_rows(
-  anchor,                                                           # primary
-  anchor %>% mutate(contam_timing = "static"),                      # co-primary
+specs <- bind_rows(
+  anchor,
+  anchor %>% mutate(contam_timing = "static"),
   anchor %>% mutate(contam_timing = "dynamic", contam_buffer = 3L),
-  anchor %>% mutate(cluster_var = "campus_id"),
+  anchor %>% mutate(contam_scope = "all"),
+  anchor %>% mutate(contam_scope = "hs_only"),
   anchor %>% mutate(mod_fe = "pixel_id + year^export_id"),
-  anchor %>% mutate(mod_fe = "pixel_id + year^month"),
-  anchor %>% mutate(contam_scope = "all"),                          # old default
-  anchor %>% mutate(contam_scope = "hs_only"))
+  anchor %>% mutate(mod_fe = "pixel_id + year^month"))
+
+# every spec gets facility-clustered AND unclustered SEs
+params <- specs
 # ────────────────────────────────────────────────────────────────────────
 
 run_ring_grid(params, pixel_data, GROUPS, MASTER_SETS, spatial_rings,

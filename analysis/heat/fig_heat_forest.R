@@ -52,7 +52,7 @@ p <- ggplot(plot_data, aes(x = estimate, y = model_label, color = is_main)) +
   
   scale_color_manual(values = c("Main" = "#d7191c", "Robustness Check" = "#4C78A8")) +
   
-
+  
   
   # Set custom x-axis ticks every 0.1 degrees Celsius based on data range
   scale_x_continuous(

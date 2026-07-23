@@ -75,17 +75,17 @@ p <- ggplot(plot_data, aes(x = rel_year, y = estimate)) +
   scale_x_continuous(breaks = seq(-5, 5, 1)) +
   labs(
     title = "Event Study: LST Near Data Centers (0 to 600m)",
-    subtitle = "Relative to year -4. Error bars indicate 95% confidence intervals.",
+    caption = "Relative to year -4. 95% CIs.",
     x = "Years Relative to Operation",
     y = "Temperature Difference (°C)"
   ) +
   theme_minimal(base_size = 14) +
   theme(
     plot.title = element_text(face = "bold", hjust = 0.5),
-    plot.subtitle = element_text(hjust = 0.5, margin = margin(b = 15)),
+    plot.caption = element_text(size = 13, margin = margin(t = 12)),
     axis.title = element_text(face = "bold"),
     panel.grid.minor.x = element_blank()
   )
 
-ggsave(here("figures", "custom_event_study_headline.png"), p, width = 10, height = 6, dpi = 300, bg = "white")
+ggsave(here("figures", "custom_event_study_headline.png"), p, width = 11.9, height = 5.9, dpi = 300, bg = "white")
 cat("Success! Saved custom event study plot to figures/custom_event_study_headline.png\n")

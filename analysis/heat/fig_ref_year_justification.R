@@ -94,15 +94,10 @@ p <- ggplot(traj_idx, aes(rel_year, idx, color = class)) +
                                 Vegetation = "forestgreen")) +
   scale_x_continuous(breaks = -6:5) +
   labs(
-    title    = "Land cover around data-center opening",
-    subtitle = paste0(
-      "NLCD class shares indexed to their rel-year \u2264 \u22124 mean.\n",
-      "Dashed blue: chosen reference (\u22124, pre-disturbance). ",
-      "Dotted red: old reference year (\u22121) \u2014."),
+    title  = "Land cover around data center opening",
     x = "Years relative to opening", y = "Share relative to initial proportions",
     color = NULL,
-    caption = paste0("Pooled Landsat isolation sets, ", length(seen_ids),
-                     " unique data centers. Annual NLCD Collection 1.0; ")
+    caption = paste0("NLCD class shares indexed to their rel-year \u2264 \u22124 mean. Dashed blue: chosen reference (\u22124, pre-disturbance). Dotted red: old reference year (\u22121). Annual NLCD Collection 1.0")
   ) +
   theme_minimal(base_size = 12) +
   theme(legend.position = "bottom", plot.caption = element_text(size = 8))

@@ -1,21 +1,23 @@
-# fig_parallel_trends.R — treatment vs control relative LST in EVENT TIME
-# Produces one figure per group: hyperscale / all / non_hs
-library(tidyverse); library(sf); library(here); library(duckdb)
+# fig_event_study.R — event study, all-DC sample, headline specification.
+# Reference year -4 (pre-construction), so relative years -8..-5 test parallel
+# trends on genuinely undisturbed land and -3..-1 show the construction ramp.
+library(tidyverse); library(sf); library(fixest); library(here); library(duckdb)
 source(here("analysis","heat","an_01_functions.R"))
 options(bitmapType = "cairo")
+setFixest_nthreads(8); data.table::setDTthreads(8)
 
+# ── Load all-DC panel ───────────────────────────────────────────────────
 f <- here("data","processed","landsat_all146","landsat_all146_obs30m_l89.csv")
-
-# Load with best-date selection (same as an_08 — this IS a model-adjacent figure)
 con <- dbConnect(duckdb()); dbExecute(con, "SET memory_limit='24GB'")
-pixel_data_145 <- dbGetQuery(con, glue::glue("
+pixel_data <- dbGetQuery(con, glue::glue("
   WITH src AS (
     SELECT export_id, longitude, latitude, year, month, date_yyyymmdd,
-           LST_Celsius, Elevation
-    FROM read_csv('{f}', ignore_errors=true)),
+           LST_Celsius, Emissivity, ST_uncertainty, Elevation, scene_cloud_cover
+    FROM read_csv('{f}', ignore_errors=true)
+    WHERE scene_cloud_cover < 30),
   counts AS (
     SELECT export_id, year, month, date_yyyymmdd,
-           COUNT(*) FILTER (WHERE LST_Celsius IS NOT NULL) n_valid
+           COUNT(*) FILTER (WHERE LST_Celsius IS NOT NULL) AS n_valid
     FROM src GROUP BY 1,2,3,4),
   best AS (
     SELECT export_id, year, month, date_yyyymmdd FROM (
@@ -23,62 +25,78 @@ pixel_data_145 <- dbGetQuery(con, glue::glue("
               ORDER BY n_valid DESC, date_yyyymmdd ASC) rk FROM counts) WHERE rk=1)
   SELECT src.* FROM src JOIN best USING (export_id, year, month, date_yyyymmdd)"))
 dbDisconnect(con)
+cat("Panel rows:", format(nrow(pixel_data), big.mark=","), "\n")
 
-dc_all <- read_csv(here("data","data_final","isolation_sets","landsat_all.csv"),
-                   show_col_types = FALSE) %>%
+dc_points_all <- read_csv(here("data","data_final","isolation_sets","landsat_all.csv"),
+                          show_col_types = FALSE) %>%
   st_as_sf(coords = c("projected_x","projected_y"), crs = 5070)
-
-# hyperscale group: loader
-d <- load_hyperscale_panel()
-
-# all/non_hs groups: keep the existing DuckDB read of the l89 file as-is,
-# but fix the HS exclusion to the roster:
-roster_ids <- read_csv(here("data","data_final","hyperscale_roster.csv"),
-                       show_col_types = FALSE) %>% pull(export_id)
-dc_all <- read_csv(here("data","data_final","isolation_sets","landsat_all.csv"),
-                   show_col_types = FALSE) %>%
+master_full <- read_csv(here("data","data_final","clean01_datacenter.csv"),
+                        show_col_types = FALSE) %>%
   st_as_sf(coords = c("projected_x","projected_y"), crs = 5070)
+master_ops <- master_full %>% filter(stage == "Operational")
+master_oc  <- master_full %>% filter(stage %in% c("Operational","Under Construction"))
 
-GROUPS <- list(
-  hyperscale = list(px = d$pixel_data, dcs = d$dc_points),
-  all        = list(px = pixel_data_145, dcs = dc_all),
-  non_hs     = list(px = pixel_data_145, dcs = dc_all %>% filter(!export_id %in% roster_ids)))
+REF <- -4; WIN <- c(-8, 8)
 
-# Parameters: match your headline an_08 spec
-TREAT_MIN <- 0; TREAT_MAX <- 600; CTRL_MIN <- 1000; CTRL_MAX <- 1500
+# ── Headline spec, event-study form ─────────────────────────────────────
+# use_construction = FALSE: the event-time dummies already trace the
+# construction ramp year by year, so a pooled dummy would be collinear.
+es <- run_pixel_analysis(
+  raw_csv_data = pixel_data, dc_points = dc_points_all,
+  min_treat_m = 0, max_treat_m = 600,
+  min_control_m = 1000, max_control_m = 1500,
+  fe_spec = "pixel_id + year", filter_elev = FALSE,
+  is_event_study = TRUE, ref_year = REF,
+  use_intensity = TRUE, master_dcs = master_ops,
+  contamination_master = master_oc,
+  contam_timing = "dynamic", contam_buffer_years = 0,
+  sensor = "landsat_monthly", use_construction = FALSE,
+  cluster_var = "export_id")
 
-for (grp in names(GROUPS)) {
-  cls <- assign_treatment_zones(GROUPS[[grp]]$px, GROUPS[[grp]]$dcs,
-                                TREAT_MIN, TREAT_MAX, CTRL_MIN, CTRL_MAX, sensor = "landsat")
-  cls <- filter_elevation_controls(cls, 50)
-  pan <- build_did_panel(cls, sensor = "landsat_monthly")
-  
-  pd <- pan %>%
-    filter(status == "Treatment", !is.na(relative_lst),
-           between(relative_year, -8, 8)) %>%
-    group_by(export_id, relative_year) %>%
-    summarise(dc_mean = mean(relative_lst), .groups = "drop") %>%
-    group_by(relative_year) %>%
-    summarise(m = mean(dc_mean), se = sd(dc_mean)/sqrt(n()),
-              n_dc = n(), .groups = "drop")
-  
-  p <- ggplot(pd, aes(relative_year, m)) +
-    geom_vline(xintercept = -0.5, linetype = "dotted") +
-    annotate("rect", xmin = -3.5, xmax = 0.5, ymin = -Inf, ymax = Inf,
-             alpha = .06, fill = "orange") +
-    geom_hline(yintercept = 0, color = "grey60", linetype = "dashed") +
-    geom_ribbon(aes(ymin = m - se, ymax = m + se), alpha = .15, fill = "firebrick") +
-    geom_line(color = "firebrick", linewidth = .9) + geom_point(size = 1.6) +
-    scale_x_continuous(breaks = -8:8) +
-    labs(title = paste0("Event-time trend (", grp, "): treatment-zone relative LST"),
-         subtitle = paste0("Ring ", TREAT_MIN, "-", TREAT_MAX,
-                           " m vs controls ", CTRL_MIN, "-", CTRL_MAX,
-                           " m; DC-level means \u00b1 SE. Shaded: construction window. ",
-                           "Flat pre-period = parallel-trends evidence."),
-         x = "Years relative to opening", y = "Relative LST (\u00b0C)") +
-    theme_minimal()
-  ggsave(here("figures", paste0("parallel_trends_", grp, ".png")),
-         p, width = 10, height = 5.5, dpi = 150)
-  rm(cls, pan); gc()
-  message("Saved: parallel_trends_", grp, ".png")
-}
+ct <- as.data.frame(summary(es$model)$coeftable) %>%
+  rownames_to_column("term")
+
+plot_data <- ct %>%
+  filter(grepl("relative_year::", term)) %>%
+  mutate(rel_year = as.numeric(str_extract(term, "-?\\d+")),
+         estimate = Estimate,
+         conf.low  = Estimate - 1.96 * `Std. Error`,
+         conf.high = Estimate + 1.96 * `Std. Error`) %>%
+  bind_rows(tibble(rel_year = REF, estimate = 0,
+                   conf.low = 0, conf.high = 0)) %>%
+  filter(between(rel_year, WIN[1], WIN[2])) %>%
+  arrange(rel_year)
+
+# Pre-trend test: are the clean pre-period coefficients jointly zero?
+pre <- plot_data %>% filter(rel_year < REF)
+cat("\nClean pre-period (rel <", REF, "): mean =",
+    round(mean(pre$estimate), 3), "| max |coef| =",
+    round(max(abs(pre$estimate)), 3), "\n")
+
+p <- ggplot(plot_data, aes(rel_year, estimate)) +
+  annotate("rect", xmin = -3.5, xmax = -0.5, ymin = -Inf, ymax = Inf,
+           fill = "#7B2841", alpha = 0.06) +
+  annotate("text", x = -2, y = Inf, label = "construction", vjust = 1.6,
+           size = 3.2, color = "#7B2841") +
+  geom_hline(yintercept = 0, color = "black", linewidth = 0.4) +
+  geom_vline(xintercept = REF + 0.5, linetype = "dashed",
+             color = "grey35", linewidth = 0.5) +
+  geom_errorbar(aes(ymin = conf.low, ymax = conf.high),
+                width = 0, linewidth = 0.45, color = "black") +
+  geom_point(size = 1.6, color = "black") +
+  scale_x_continuous(breaks = seq(WIN[1], WIN[2], 2)) +
+  labs(title = "Event Study: Land Surface Temperature, 145 Data Centers",
+       caption = paste0("Relative to year ", REF,
+                         " (pre-construction baseline). 95% CI, facility-clustered."),
+       x = "Years Relative to Opening", y = "Temperature Effect (\u00b0C)") +
+  theme_bw(base_size = 13) +
+  theme(panel.grid.minor = element_blank(),
+        panel.grid.major.x = element_blank(),
+        plot.title = element_text(face = "bold", hjust = 0.5),
+        plot.caption = element_text(size = 10, margin = margin(t = 12)),
+        axis.title = element_text(face = "bold"))
+
+ggsave(here("figures","event_study_all.png"), p,
+       width = 11.9, height = 5.9, dpi = 300, bg = "white")
+write_csv(plot_data, here("results","event_study_all.csv"))
+cat("Saved: figures/event_study_all.png\n")

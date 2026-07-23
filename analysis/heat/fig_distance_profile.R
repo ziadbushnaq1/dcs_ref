@@ -1,88 +1,94 @@
-library(tidyverse); library(sf); library(here)
-source(here("analysis", "heat", "an_01_functions.R"))
+# fig_distance_profile.R — thermal profile vs distance, all-DC sample.
+# Pre = rel year <= -4 (before construction); Post = rel year >= 0.
+# Outcome is LST relative to the facility's own 1000-1500m control mean,
+# matching the regression's counterfactual.
+library(tidyverse); library(sf); library(here); library(duckdb)
+options(bitmapType = "cairo")
 
-ASSET   <- "landsat_hyperscale_all"     # rerun with iso2500m / all146 later
-BIN_W   <- 150
-MAX_D   <- 5000
+BIN_W <- 100; MAX_D <- 1500
 
-pixel_data <- read_csv(
-  here("data","processed",ASSET,"landsat_monthly_obs_lst_landcover.csv"),
-  col_select = c(export_id, longitude, latitude, year, month,
-                 date_yyyymmdd, LST_Celsius, Elevation),
-  show_col_types = FALSE)
+f <- here("data","processed","landsat_all146","landsat_all146_obs30m_l89.csv")
+con <- dbConnect(duckdb()); dbExecute(con, "SET memory_limit='24GB'")
+px <- dbGetQuery(con, glue::glue("
+  WITH src AS (
+    SELECT export_id, longitude, latitude, year, month, date_yyyymmdd,
+           LST_Celsius, scene_cloud_cover
+    FROM read_csv('{f}', ignore_errors=true)
+    WHERE scene_cloud_cover < 30 AND LST_Celsius IS NOT NULL),
+  counts AS (
+    SELECT export_id, year, month, date_yyyymmdd, COUNT(*) AS n_valid
+    FROM src GROUP BY 1,2,3,4),
+  best AS (
+    SELECT export_id, year, month, date_yyyymmdd FROM (
+      SELECT *, ROW_NUMBER() OVER (PARTITION BY export_id, year, month
+              ORDER BY n_valid DESC, date_yyyymmdd ASC) rk FROM counts) WHERE rk=1)
+  SELECT src.* FROM src JOIN best USING (export_id, year, month, date_yyyymmdd)"))
+dbDisconnect(con)
 
-best_dates <- pixel_data %>%
-  group_by(export_id, year, month, date_yyyymmdd) %>%
-  summarise(n_valid = sum(!is.na(LST_Celsius)), .groups="drop") %>%
+dcs <- read_csv(here("data","data_final","isolation_sets","landsat_all.csv"),
+                show_col_types = FALSE)
+
+# distance from each pixel to its own facility
+px_sf <- px %>%
+  st_as_sf(coords = c("longitude","latitude"), crs = 4326) %>%
+  st_transform(5070)
+xy <- st_coordinates(px_sf)
+px <- px %>% mutate(px_x = xy[,1], px_y = xy[,2]) %>%
+  left_join(dcs %>% select(export_id, projected_x, projected_y, year_operational),
+            by = "export_id") %>%
+  mutate(dist_m = sqrt((px_x - projected_x)^2 + (px_y - projected_y)^2),
+         rel_year = year - year_operational)
+rm(px_sf, xy); gc()
+
+# control mean per facility-scene = the regression's counterfactual
+ctrl <- px %>%
+  filter(between(dist_m, 1000, 1500)) %>%
   group_by(export_id, year, month) %>%
-  filter(n_valid == max(n_valid)) %>% filter(date_yyyymmdd == min(date_yyyymmdd)) %>%
-  ungroup() %>% select(export_id, year, month, date_yyyymmdd)
-pixel_data <- semi_join(pixel_data, best_dates,
-                        by = c("export_id","year","month","date_yyyymmdd"))
-rm(best_dates); gc()
+  summarise(ctrl_lst = mean(LST_Celsius), .groups = "drop")
 
-dc_points <- read_csv(here("data","data_final","isolation_sets",
-                           paste0(ASSET,".csv")), show_col_types = FALSE) %>%
-  st_as_sf(coords = c("projected_x","projected_y"), crs = 5070)
+prof <- px %>%
+  filter(dist_m <= MAX_D) %>%
+  inner_join(ctrl, by = c("export_id","year","month")) %>%
+  mutate(rel = LST_Celsius - ctrl_lst,
+         period = case_when(rel_year <= -4 ~ "Pre-construction (rel \u2264 \u22124)",
+                            rel_year >=  0 ~ "Operational (rel \u2265 0)",
+                            TRUE ~ NA_character_),
+         dbin = floor(dist_m / BIN_W) * BIN_W) %>%
+  filter(!is.na(period))
 
-# Distances (reuse zone machinery's projection approach)
-dc_xy <- dc_points %>%
-  mutate(dc_x = st_coordinates(.)[,1], dc_y = st_coordinates(.)[,2]) %>%
-  st_drop_geometry() %>% select(export_id, year_operational, dc_x, dc_y)
-
-xy <- sf::sf_project(st_crs(4326), st_crs(5070),
-                     as.matrix(pixel_data[, c("longitude","latitude")]))
-pixel_data$px <- xy[,1]; pixel_data$py <- xy[,2]
-
-prof <- pixel_data %>%
-  left_join(dc_xy, by = "export_id") %>%
-  mutate(
-    dist   = sqrt((px-dc_x)^2 + (py-dc_y)^2),
-    dbin   = pmin(floor(dist / BIN_W) * BIN_W, MAX_D - BIN_W),
-    relyr  = year - year_operational,
-    period = case_when(relyr <= -4          ~ "Pre (rel \u2264 \u22124)",
-                       relyr >=  1          ~ "Post (rel \u2265 +1)",
-                       TRUE                 ~ NA_character_)   # drop construction/yr0
-  ) %>%
-  filter(dist <= MAX_D, !is.na(period), !is.na(LST_Celsius))
-
-# Outcome (a): relative_lst vs same-DC-month FAR-FIELD mean (3000-5000m),
-# so the near-field profile isn't differenced against itself
-farfield <- prof %>% filter(dbin >= 3000) %>%
-  group_by(export_id, year, month) %>%
-  summarise(ff = mean(LST_Celsius), .groups = "drop")
-
-prof <- prof %>% left_join(farfield, by = c("export_id","year","month")) %>%
-  filter(!is.na(ff)) %>% mutate(rel = LST_Celsius - ff)
-
-# DC-level means per bin-period first, THEN aggregate across DCs —
-# so SD bands reflect between-facility variation, not pixel noise,
-# and big campuses don't dominate.
+# facility-level means first, so large facilities don't dominate
 plot_dat <- prof %>%
   group_by(export_id, period, dbin) %>%
   summarise(dc_mean = mean(rel), .groups = "drop") %>%
   group_by(period, dbin) %>%
-  summarise(m = mean(dc_mean), sd = sd(dc_mean), n_dc = n(), .groups = "drop")
+  summarise(m = mean(dc_mean), se = sd(dc_mean)/sqrt(n()),
+            n_dc = n(), .groups = "drop")
 
 p <- ggplot(plot_dat, aes(dbin + BIN_W/2, m, color = period, fill = period)) +
-  geom_ribbon(aes(ymin = m - sd, ymax = m + sd), alpha = .15, color = NA) +
-  geom_line(linewidth = .9) + geom_point(size = 1.4) +
-  geom_hline(yintercept = 0, color = "grey60", linetype = "dashed") +
-  annotate("rect", xmin = 300, xmax = 600, ymin = -Inf, ymax = Inf,
-           alpha = .07, fill = "steelblue") +
-  scale_x_continuous(breaks = seq(0, MAX_D, 500)) +
-  scale_color_manual(values = c("Pre (rel \u2264 \u22124)" = "grey40",
-                                "Post (rel \u2265 +1)" = "firebrick")) +
-  scale_fill_manual(values  = c("Pre (rel \u2264 \u22124)" = "grey40",
-                                "Post (rel \u2265 +1)" = "firebrick")) +
-  labs(title = paste("Thermal profile by distance:", ASSET),
-       subtitle = paste0("LST relative to same-scene 3\u20135 km far field; ",
-                         "Shaded: 300\u2013600 m analysis ring. ",
-                         "Construction years (rel \u22123..0) excluded."),
+  annotate("rect", xmin = 0, xmax = 600, ymin = -Inf, ymax = Inf,
+           alpha = .07, fill = "#7B2841") +
+  annotate("rect", xmin = 1000, xmax = 1500, ymin = -Inf, ymax = Inf,
+           alpha = .05, fill = "grey30") +
+  geom_ribbon(aes(ymin = m - 1.96*se, ymax = m + 1.96*se),
+              alpha = .18, color = NA) +
+  geom_line(linewidth = .9) + geom_point(size = 1.5) +
+  geom_hline(yintercept = 0, color = "grey50", linetype = "dashed") +
+  scale_x_continuous(breaks = seq(0, MAX_D, 300)) +
+  scale_color_manual(values = c("Pre-construction (rel \u2264 \u22124)" = "grey45",
+                                "Operational (rel \u2265 0)" = "#7B2841")) +
+  scale_fill_manual(values  = c("Pre-construction (rel \u2264 \u22124)" = "grey45",
+                                "Operational (rel \u2265 0)" = "#7B2841")) +
+  labs(title = "Thermal Profile by Distance from Data Center",
+       caption = paste0("145 facilities. LST relative to each facility's own ",
+                         "1000\u20131500m control ring. Shaded: treatment ring ",
+                         "(0\u2013600m) and control ring (1000\u20131500m). 95% CIs."),
        x = "Distance from facility (m)", y = "Relative LST (\u00b0C)",
        color = NULL, fill = NULL) +
-  theme_minimal() + theme(legend.position = "bottom")
+  theme_bw(base_size = 13) +
+  theme(legend.position = "bottom", panel.grid.minor = element_blank(), plot.title.position = "plot",
+        plot.title = element_text(face = "bold", hjust = 0.5))
 
-ggsave(here("figures", paste0("distance_profile_", ASSET, ".png")),
-       p, width = 12, height = 6, dpi = 150)
-write_csv(plot_dat, here("results", paste0("distance_profile_", ASSET, ".csv")))
+ggsave(here("figures","distance_profile_all.png"), p,
+       width = 11.9, height = 5.9, dpi = 300, bg = "white")
+write_csv(plot_dat, here("results","distance_profile_all.csv"))
+cat("Saved: figures/distance_profile_all.png\n")

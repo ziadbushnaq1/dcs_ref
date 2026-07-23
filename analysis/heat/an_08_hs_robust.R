@@ -27,7 +27,7 @@ spatial_rings <- list(c(0,600))          # headline ring only
 
 anchor <- tibble(grp = "hs", ring_idx = 1L, intens = TRUE,
                  use_construction = TRUE, mod_fe = "pixel_id + year",
-                 cluster_var = "none", treat_scope = "hs_only",
+                 cluster_var = "export_id", treat_scope = "hs_only",
                  contam_scope = "all_oc", contam_timing = "dynamic",
                  contam_buffer = 0L)
 
@@ -44,8 +44,7 @@ specs <- bind_rows(
   anchor %>% mutate(mod_fe = "pixel_id + year^sensor"),
   anchor %>% mutate(mod_fe = "pixel_id + year^campus_id"))
 
-# every spec gets facility-clustered AND unclustered SEs
-params <- bind_rows(specs, specs %>% mutate(cluster_var = "none"))
+params <- bind_rows(specs, anchor %>% mutate(cluster_var = "campus_id"), anchor %>% mutate(cluster_var = "none"))
                     
 # ────────────────────────────────────────────────────────────────────────
 

@@ -2,6 +2,7 @@
 library(tidyverse)
 library(sf)
 library(here)
+library(duckdb)
 options(bitmapType = "cairo")
 
 # 1. Load the master panel to ensure L5 and L8/9 data are perfectly merged
@@ -9,7 +10,7 @@ source(here("analysis", "heat", "load_hyperscale_panel.R"))
 d <- load_hyperscale_panel()
 
 # 2. Select Facility 
-target_id <- 412
+target_id <- 3012
 
 master_ops <- d$dc_points %>%
   filter(export_id == target_id) %>%
@@ -39,13 +40,14 @@ pixels_agg <- pixels_sf %>%
     x = st_coordinates(.)[,1],
     y = st_coordinates(.)[,2],
     period = case_when(
-      year <= year_op - 3 ~ "1. Pre-Construction Baseline",
-      year >= year_op     ~ "2. Post-Operation LST",
+      year <= year_op - 3 ~ "Pre-Construction",
+      year >= year_op     ~ "Post-Operation",
       TRUE ~ "Exclude"
     )
   ) %>%
   st_drop_geometry() %>%
   filter(period != "Exclude") %>%
+  mutate(period = factor(period, levels = c("Pre-Construction", "Post-Operation"))) %>%
   group_by(x, y, period) %>%
   summarise(mean_lst = mean(LST_Celsius, na.rm = TRUE), .groups = "drop")
 
@@ -60,19 +62,20 @@ p <- ggplot() +
   scale_color_fermenter(palette = "RdYlGn", direction = -1, n.breaks = 7, name = "Mean LST (°C)") +
   facet_wrap(~ period) +
   labs(
-    title = paste("Localized Heat Island Effect: Hyperscale Facility", target_id),
-    subtitle = paste("Opened in", year_op, "| Dashed outlines represent 300m, 600m, 1000m, and 1500m radii")
+    title = paste("Localized Heat Effect: Hyperscale Facility", target_id),
+    caption = paste("Opened in", year_op, "| Dashed outlines represent 300m, 600m, 1000m, and 1500m radii")
   ) +
   theme_void(base_size = 14) +
   theme(
+    plot.title.position = "plot",
     plot.title = element_text(face = "bold", hjust = 0.5),
-    plot.subtitle = element_text(hjust = 0.5, margin = margin(b = 15)),
-    strip.text = element_text(face = "bold", size = 16, margin = margin(b = 10)),
+    plot.caption = element_text(size = 13, margin = margin(t = 12)),
+    strip.text = element_text(size = 14, margin = margin(t = 10)),
     legend.position = "right",
     legend.title = element_text(face = "bold"),
     panel.spacing = unit(2, "lines")
   ) +
   coord_sf(datum = NA)
 
-ggsave(here("figures", paste0("heatmap_fac_", target_id, ".png")), p, width = 12, height = 6, dpi = 300, bg = "white")
+ggsave(here("figures", paste0("heatmap_fac_", target_id, ".png")), p, width = 11.9, height = 5.9, dpi = 300, bg = "white")
 cat("Success! Saved to figures/heatmap_fac_", target_id, ".png\n", sep="")

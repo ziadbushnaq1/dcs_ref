@@ -97,36 +97,30 @@ run_ring_grid <- function(params, pixel_data, groups, master_sets,
   # Drop exact duplicate runs (safety net)
   results <- bind_rows(out) %>% distinct()
   
-  spec_keys <- c("group","ring_min","ring_max","ring_label","intensity",
-                 "use_construction","fe_spec","treat_scope","contam_scope",
-                 "contam_timing","contam_buffer","term")
-  
-  base <- results %>%
-    filter(cluster_var == "export_id") %>%
-    select(all_of(spec_keys), n_obs, n_treat_dcs,
-           estimate, se_facility = se, p_facility = p_value)
-  
-  unclust <- results %>%
-    filter(cluster_var == "none") %>%
-    select(all_of(spec_keys), se_none = se, p_none = p_value)
-  
-  campus <- results %>%
-    filter(cluster_var == "campus_id") %>%
-    select(all_of(spec_keys), se_campus = se, p_campus = p_value)
-  
-  results_wide <- base %>%
-    left_join(unclust, by = spec_keys) %>%
-    left_join(campus,  by = spec_keys) %>%
+  # One row per model. Both coefficient terms as column pairs; clustering
+  # stays a plain column so specs with different vcov appear as separate rows.
+  results_wide <- results %>%
+    select(group, ring_label, intensity, use_construction, fe_spec,
+           cluster_var, treat_scope, contam_scope, contam_timing,
+           contam_buffer, n_obs, n_treat_dcs, term, estimate, se, p_value) %>%
     pivot_wider(
-      id_cols = setdiff(spec_keys, "term"),
-      names_from = term,
-      values_from = c(estimate, se_facility, p_facility,
-                      se_none, p_none, se_campus, p_campus),
-      names_glue = "{term}: {.value}") %>%
-    arrange(fe_spec, contam_scope, contam_timing)
+      names_from  = term,
+      values_from = c(estimate, se, p_value),
+      names_glue  = "{term}_{.value}") %>%
+    select(group, ring_label, fe_spec, cluster_var, treat_scope, contam_scope,
+           contam_timing, contam_buffer, n_treat_dcs,
+           op_est   = treated_post_estimate,
+           op_se    = treated_post_se,
+           op_p     = treated_post_p_value,
+           con_est  = any_of("construction_period_estimate"),
+           con_se   = any_of("construction_period_se"),
+           con_p    = any_of("construction_period_p_value")) %>%
+    arrange(group, fe_spec, contam_scope, contam_timing, cluster_var)
   
+  cat("\n==== Results (one row per model) ====\n")
+  cat("op_* = operational effect | con_* = construction period\n")
   print(knitr::kable(results_wide, digits = 3))
-  
+
   cat("\n==== Compact ====\n")
   print(knitr::kable(results %>%
                        filter(term == "treated_post") %>%

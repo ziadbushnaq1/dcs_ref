@@ -229,21 +229,6 @@ case $JOB_TYPE in
             Rscript analysis/heat/make_shiny_heat_tables.R"
         ;;
         
-    fig_viz)
-        sbatch \
-            --job-name=fig_viz \
-            --account=$ACCOUNT \
-            --partition=$PARTITION \
-            --nodes=1 \
-            --ntasks=1 \
-            --cpus-per-task=8 \
-            --mem=128G \
-            --time=2:00:00 \
-            --output=${BASE_DIR}/fig_viz_%j.log \
-            --wrap="$SETUP_CMDS
-            Rscript analysis/heat/fig_distance_profile.R"
-        ;;
-        
     fig_gif)
         sbatch \
             --job-name=fig_gif \
@@ -259,19 +244,36 @@ case $JOB_TYPE in
             Rscript analysis/heat/fig_construction_timelapse.R"
         ;;
 
-    fig_event)
-        sbatch \
-            --job-name=fig_event \
-            --account=$ACCOUNT \
-            --partition=$PARTITION \
-            --nodes=1 \
-            --ntasks=1 \
-            --cpus-per-task=8 \
-            --mem=128G \
-            --time=2:00:00 \
+   fig_event)
+        sbatch --job-name=fig_event --account=$ACCOUNT --partition=$PARTITION \
+            --nodes=1 --ntasks=1 --cpus-per-task=8 --mem=196G --time=4:00:00 \
             --output=${BASE_DIR}/fig_event_%j.log \
             --wrap="$SETUP_CMDS
-            Rscript analysis/heat/fig_custom_event_study.R"
+            Rscript analysis/heat/fig_event_study.R"
+        ;;
+
+    fig_dist)
+        sbatch --job-name=fig_dist --account=$ACCOUNT --partition=$PARTITION \
+            --nodes=1 --ntasks=1 --cpus-per-task=8 --mem=196G --time=4:00:00 \
+            --output=${BASE_DIR}/fig_dist_%j.log \
+            --wrap="$SETUP_CMDS
+            Rscript analysis/heat/fig_distance_profile.R"
+        ;;
+        
+    fig_heatmap)
+        sbatch --job-name=fig_heatmap --account=$ACCOUNT --partition=$PARTITION \
+            --nodes=1 --ntasks=1 --cpus-per-task=8 --mem=196G --time=4:00:00 \
+            --output=${BASE_DIR}/fig_heatmap_%j.log \
+            --wrap="$SETUP_CMDS
+            Rscript analysis/heat/fig_lst_heatmap.R"
+        ;;
+        
+    fig_refyear)
+        sbatch --job-name=fig_ref --account=$ACCOUNT --partition=$PARTITION \
+            --nodes=1 --ntasks=1 --cpus-per-task=8 --mem=196G --time=4:00:00 \
+            --output=${BASE_DIR}/fig_refyear_%j.log \
+            --wrap="$SETUP_CMDS
+            Rscript analysis/heat/fig_ref_year_justification.R"
         ;;
         
     trend_vis)

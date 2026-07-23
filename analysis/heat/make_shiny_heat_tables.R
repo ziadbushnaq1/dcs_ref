@@ -68,28 +68,19 @@ heat_long <- bind_rows(
 
 # One model = one row. Operational/Construction become column pairs so any
 # sort order keeps a model's estimates together.
+# One row per model; both terms as column pairs, clustering as a column.
 heat_models <- heat_long %>%
-  mutate(Inference = case_when(
-    Clustering == "None (not recommended)" ~ "unclustered",
-    Clustering == "Campus"                 ~ "campus",
-    TRUE                                   ~ "clustered")) %>%
   pivot_wider(
-    id_cols = c(Sample, Ring, `Fixed Effects`, `Control Exclusion`, Facilities),
-    names_from  = c(Term, Inference),
+    id_cols = c(Sample, Ring, `Fixed Effects`, Clustering,
+                `Control Exclusion`, Facilities),
+    names_from  = Term,
     values_from = c(Estimate, SE, `p-value`),
-    names_glue  = "{Term}_{Inference}_{.value}") %>%
-  select(Sample, Ring, `Fixed Effects`, `Control Exclusion`, Facilities,
-         `Operational Estimate` = `Operational_clustered_Estimate`,
-         `Operational SE`       = `Operational_clustered_SE`,
-         `Operational p-value`  = `Operational_clustered_p-value`,
-         `Construction Estimate`= `Construction_clustered_Estimate`,
-         `Construction SE`      = `Construction_clustered_SE`,
-         `Construction p-value` = `Construction_clustered_p-value`,
-         # Move unclustered/campus into any_of() to prevent missing-column errors
-         any_of(c(`Operational SE (unclustered)`  = "Operational_unclustered_SE", 
-                  `Operational p (unclustered)`   = "Operational_unclustered_p-value",
-                  `Construction SE (unclustered)` = "Construction_unclustered_SE", 
-                  `Construction p (unclustered)`  = "Construction_unclustered_p-value"))) %>%
+    names_glue  = "{Term} {.value}") %>%
+  select(Sample, Ring, `Fixed Effects`, Clustering, `Control Exclusion`,
+         Facilities,
+         `Operational Estimate`, `Operational SE`, `Operational p-value`,
+         any_of(c("Construction Estimate", "Construction SE",
+                  "Construction p-value"))) %>%
   arrange(Sample, Ring, `Fixed Effects`)
 
 heat_seasonal <- seasonal %>%
