@@ -387,11 +387,12 @@ server <- function(input, output, session) {
   # ----------------------------------------------------------
   # RESULTS TAB — Heat: surface temperature DiD tables
   # ----------------------------------------------------------
-  heat_poster   <- readRDS("report/heat_poster_table.rds")
-  heat_models   <- readRDS("report/heat_models.rds")
-  heat_seasonal <- readRDS("report/heat_seasonal.rds")
-  heat_meta     <- readRDS("report/heat_meta.rds")
-  heat_footnote <- readRDS("report/heat_footnote.rds")
+  read_or_null <- function(p) if (file.exists(p)) readRDS(p) else NULL
+  heat_poster   <- read_or_null("report/heat_poster_table.rds")
+  heat_models   <- read_or_null("report/heat_models.rds")
+  heat_seasonal <- read_or_null("report/heat_seasonal.rds")
+  heat_meta     <- read_or_null("report/heat_meta.rds")
+  heat_footnote <- read_or_null("report/heat_footnote.rds")
   
   # Subtitle comes from heat_meta so the year range cannot drift from the panel.
   output$heat_subtitle     <- renderText(heat_meta$subtitle)
@@ -450,25 +451,29 @@ server <- function(input, output, session) {
                   options = list(dom = "t", pageLength = 20)))
   
   # ----- Heat: construction time-lapse ----------------------------------
-  observe({
-    if (file.exists("report/timelapse_index.rds")) {
-      idx <- readRDS("report/timelapse_index.rds")
-      updateSliderInput(session, "tl_year",
-                        min = min(idx$year), max = max(idx$year),
-                        value = min(idx$year), step = 1)
-    }
+  heat_tl_idx <- if (file.exists("report/timelapse_index.rds"))
+    readRDS("report/timelapse_index.rds") else NULL
+  
+  output$heat_tl_slider_ui <- renderUI({
+    validate(need(!is.null(heat_tl_idx),
+                  "timelapse_index.rds not found. Run make_timelapse_gif.R."))
+    yrs <- sort(heat_tl_idx$year)
+    sliderInput("heat_tl_year", "Year", min = min(yrs), max = max(yrs),
+                value = min(yrs), step = NULL, sep = "", ticks = TRUE,
+                animate = animationOptions(interval = 1400, loop = TRUE),
+                width = "90%")
   })
   
-  output$heat_timelapse_img <- renderImage({
-    validate(need(file.exists("report/timelapse_index.rds"),
-                  "timelapse_index.rds not found. Run make_timelapse_index.R."))
-    req(input$tl_year)
-    idx <- readRDS("report/timelapse_index.rds")
-    row <- idx[idx$year == input$tl_year, ]
-    validate(need(nrow(row) > 0, "No image for that year."))
-    list(src = file.path("www", "timelapse", row$file[1]),
-         contentType = "image/png", width = 640,
-         alt = paste("Facility imagery", input$tl_year))
+  output$heat_tl_frame <- renderImage({
+    validate(need(!is.null(heat_tl_idx), "No time-lapse index."))
+    req(input$heat_tl_year)
+    # NAIP years are irregular — snap to the nearest available frame
+    yrs <- heat_tl_idx$year
+    pick <- yrs[which.min(abs(yrs - input$heat_tl_year))]
+    row <- heat_tl_idx[heat_tl_idx$year == pick, ][1, ]
+    list(src = file.path("www", "timelapse", row$file),
+         contentType = "image/png", width = 600,
+         alt = paste("NAIP imagery", pick))
   }, deleteFile = FALSE)
   
   

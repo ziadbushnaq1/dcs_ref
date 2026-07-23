@@ -187,7 +187,54 @@ sub_economics <- tabPanel(
 # ============================================================
 # HEAT TAB
 # ============================================================
-
+sub_heat <- tabPanel(
+  
+  "Heat",
+  
+  fluidRow(
+    column(
+      width = 12,
+      
+      tags$h3("Construction Time-Lapse"),
+      tags$p(
+        class = "subtitle",
+        "Annual 1m aerial imagery of a hyperscale facility, before and after it",
+        "became operational. Land clearing and building construction are visible",
+        "in the years around the opening date."
+      ),
+      
+      fluidRow(
+        column(
+          6,
+          tags$h4("Step through years"),
+          uiOutput("heat_tl_slider_ui"),
+          imageOutput("heat_tl_frame", height = "620px")
+        ),
+        column(
+          6,
+          tags$h4("Animation"),
+          tags$img(
+            src = "timelapse/timelapse_2899.gif",
+            style = "width:100%; max-width:620px; border:1px solid #D3C0C8;"
+          )
+        )
+      ),
+      
+      tags$div(
+        class = "info-card",
+        style = "margin-top:14px;",
+        tags$h5("About this imagery"),
+        tags$p(
+          "Imagery: USDA NAIP via Google Earth Engine. This campus expanded to",
+          "multiple buildings after its recorded opening year, but the facility",
+          "inventory records it as a single point. Land classified as control in",
+          "the analysis may therefore contain unrecorded buildings, which biases",
+          "estimated temperature effects toward zero."
+        )
+      )
+    )
+  )
+)
 
 # ============================================================
 # MAIN MAPS TAB
@@ -207,7 +254,7 @@ maps_tab <- tabPanel(
       class = "subtitle",
       
       paste(
-        "Explore data center siting across Virginia using",
+        "Explore data center siting using",
         "multiple spatial perspectives including land",
         "availability, economics, and thermal conditions."
       )
@@ -220,6 +267,7 @@ maps_tab <- tabPanel(
     
     type = "tabs",
     
-    sub_economics
+    sub_economics,
+    sub_heat
   )
 )
