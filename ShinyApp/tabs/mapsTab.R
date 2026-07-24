@@ -293,7 +293,7 @@ maps_tab <- tabPanel(
     type = "tabs",
     
     sub_economics,
-    sub_dcmap,
-    sub_heat
+    sub_heat,
+    sub_dcmap
   )
 )
