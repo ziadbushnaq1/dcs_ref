@@ -677,34 +677,87 @@ server <- function(input, output, session) {
     sprintf("Showing %s facilities.", format(nrow(d), big.mark = ","))
   })
   
-  # heat analysis visualization
+  # ----------------------------------------------------------
+  # MAPS TAB — Heat: figure gallery + construction animation
+  # ----------------------------------------------------------
   heat_figs <- tibble::tribble(
     ~file, ~title, ~desc,
     "event_study_all.png", "Event Study",
-    "Effect by year relative to facility opening. Flat estimates before year -4 support the parallel-trends assumption; the rise from -3 onward is construction, and the post-0 level is the operational effect.",
+    "Effect by year relative to facility opening. Flat estimates before year -4 support the parallel-trends assumption; the rise from -3 onward is construction disturbance, and the level after year 0 is the operational effect.",
     "distance_profile_all.png", "Thermal Profile by Distance",
     "Temperature relative to each facility's own 1000-1500m control ring, before construction versus after opening. The gap is largest at the fence line and closes by roughly 1000m.",
     "heatmap_fac_3012.png", "Facility Heat Map",
-    "Mean land surface temperature around one facility, before construction and after operation. Dashed rings mark the 300m, 600m, 1000m, and 1500m radii.",
+    "Mean land surface temperature around one facility, before construction and after operation. Dashed outlines mark the 300m, 600m, 1000m, and 1500m radii.",
     "ref_year_justification.png", "Baseline Year Justification",
-    "Land cover composition by year relative to opening. Barren land peaks in the three years before opening, which is why the baseline is anchored at year -4 rather than -1."
-  )
+    "Land cover composition by year relative to opening. Barren land peaks in the three years before opening, which is why the baseline is anchored at year -4 rather than -1.",
+    "robustness_forest.png", "Robustness Across Specifications",
+    "The operational effect under alternative fixed effects, control-exclusion rules, and clustering choices. The estimate stays in a narrow band across all of them."
+  ) %>%
+    dplyr::filter(file.exists(file.path("www", "heat_figures", file)))
   
-  output$heat_gallery <- renderUI({
-    rows <- lapply(seq_len(nrow(heat_figs)), function(i) {
-      f <- heat_figs[i, ]
-      if (!file.exists(file.path("www", "heat_figures", f$file))) return(NULL)
-      tags$div(
-        class = "info-card", style = "margin-bottom:22px;",
-        tags$h4(f$title),
-        tags$p(class = "subtitle", f$desc),
-        tags$a(href = file.path("heat_figures", f$file), target = "_blank",
-               tags$img(src = file.path("heat_figures", f$file),
-                        style = "width:100%; max-width:900px; height:auto;
-                                 border:1px solid #D3C0C8;"))
-      )
-    })
-    do.call(tagList, Filter(Negate(is.null), rows))
+  observe({
+    if (nrow(heat_figs) > 0) {
+      updateSelectInput(session, "heat_fig_pick",
+                        choices = setNames(heat_figs$file, heat_figs$title),
+                        selected = heat_figs$file[1])
+    }
+  })
+  
+  output$heat_fig_panel <- renderUI({
+    validate(need(nrow(heat_figs) > 0,
+                  "No figures found in www/heat_figures/."))
+    req(input$heat_fig_pick)
+    f <- heat_figs[heat_figs$file == input$heat_fig_pick, ][1, ]
+    tags$div(
+      class = "info-card",
+      tags$a(href = file.path("heat_figures", f$file), target = "_blank",
+             tags$img(src = file.path("heat_figures", f$file),
+                      style = "width:100%; height:auto; border:1px solid #D3C0C8;")),
+      tags$p(class = "subtitle", style = "margin-top:10px;", f$desc),
+      tags$p(class = "subtitle", style = "font-size:12px;",
+             tags$em("Click the image to open it full size."))
+    )
+  })
+  
+  # ----- Construction animations (one per facility) ----------------------
+  heat_gifs <- reactive({
+    f <- "report/timelapse_index.rds"
+    validate(need(file.exists(f),
+                  "timelapse_index.rds not found. Run fig_construction_timelapse.R."))
+    readRDS(f) %>%
+      dplyr::group_by(export_id, gif) %>%
+      dplyr::summarise(yr_min = min(year), yr_max = max(year),
+                       n_frames = dplyr::n(),
+                       year_op = min(year[phase == "After"]),
+                       .groups = "drop") %>%
+      dplyr::filter(file.exists(file.path("www", "timelapse", gif)))
+  })
+  
+  output$heat_gif_pick_ui <- renderUI({
+    g <- heat_gifs()
+    validate(need(nrow(g) > 0, "No animations available yet."))
+    labs <- sprintf("Facility %s (opened %s)", g$export_id, g$year_op)
+    selectInput("heat_gif_pick", NULL,
+                choices = setNames(g$export_id, labs), width = "100%")
+  })
+  
+  output$heat_gif_panel <- renderUI({
+    g <- heat_gifs()
+    req(input$heat_gif_pick)
+    row <- g[g$export_id == as.numeric(input$heat_gif_pick), ][1, ]
+    validate(need(nrow(row) == 1, "Animation not found."))
+    tags$div(
+      class = "info-card",
+      tags$img(src = file.path("timelapse", row$gif),
+               style = "width:100%; height:auto; border:1px solid #D3C0C8;"),
+      tags$p(class = "subtitle", style = "margin-top:10px;",
+             sprintf("Aerial imagery %d to %d (%d frames), facility opened %d.",
+                     row$yr_min, row$yr_max, row$n_frames, row$year_op)),
+      tags$p(class = "subtitle", style = "font-size:12px;",
+             tags$em("USDA NAIP imagery via Google Earth Engine. Land clearing and
+                      building construction are visible in the years around the
+                      opening date."))
+    )
   })
   
   # ----------------------------------------------------------
